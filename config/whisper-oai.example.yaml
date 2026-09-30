@@ -1,0 +1,67 @@
+# whisper-oai configuration
+#
+# Copy this file to config/whisper-oai.yaml (or point --config at your own)
+# and edit. Every value can also be set via a flag on `whisper-oai serve`
+# or an environment variable (WHISPER_OAI_<SECTION>_<KEY>, e.g.
+# WHISPER_OAI_SERVER_PORT). Precedence: flag > env > config file > default.
+
+# ---------------------------------------------------------------------------
+# External OpenAI-compatible API server (what clients talk to)
+# ---------------------------------------------------------------------------
+server:
+  # Host/interface the proxy listens on.
+  host: "0.0.0.0"
+  # Port the proxy listens on. This is the "user's specified port".
+  port: 8000
+  # Optional. If set, clients must send "Authorization: Bearer <api_key>".
+  # Empty means no authentication (fine for localhost-only use).
+  api_key: ""
+  # Model name advertised by /v1/models and echoed in responses.
+  model_name: "whisper-1"
+
+# ---------------------------------------------------------------------------
+# whisper.cpp whisper-server (the backend the proxy drives)
+# ---------------------------------------------------------------------------
+whisper:
+  # Path to the whisper-server binary.
+  bin: "/opt/whisper.cpp/build/bin/whisper-server"
+  # Path to the GGML model file.
+  model: "/opt/whisper.cpp/models/ggml-large-v3-turbo.bin"
+  # GPU device index (whisper-server -dev / --device).
+  device: 0
+  # Enable flash attention (whisper-server --flash-attn).
+  flash_attn: true
+  # Host whisper-server binds to. Keep 127.0.0.1 so ONLY the Go proxy can
+  # reach it (loopback). Do not expose this port.
+  host: "127.0.0.1"
+  # Port whisper-server binds to (internal). The proxy talks to this.
+  # Kept separate from server.port so the two never collide.
+  port: 8080
+  # Number of CPU threads for whisper-server (-t). 0 = auto (min(4, cores)).
+  threads: 0
+  # Default language for inference ("en", "auto", ...). Clients can override
+  # per-request with the `language` field.
+  language: "auto"
+  # Extra arguments appended verbatim to the whisper-server command line.
+  # Use for anything not covered above, e.g. ["-t", "8", "--no-gpu"].
+  extra_args: []
+
+# ---------------------------------------------------------------------------
+# Audio / video upload handling
+# ---------------------------------------------------------------------------
+audio:
+  # Path to the ffmpeg binary, used to strip the audio track out of video
+  # uploads (mp4, mov, mkv, webm, ...). Plain audio files (wav, mp3, ogg,
+  # flac, opus) never touch ffmpeg. Only needed if you upload video.
+  ffmpeg_bin: "ffmpeg"
+  # Directory for spooled uploads and extracted audio. Empty = os.TempDir().
+  temp_dir: ""
+  # Maximum upload size in MB. 0 = unlimited. Exceeding it returns HTTP 413.
+  max_upload_mb: 2048
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log:
+  # debug | info | warn | error
+  level: "info"

@@ -1,0 +1,38 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+whisper-oai
+whisper-oai-*
+
+# Test binary
+*.test
+*.out
+
+# Go workspace / build artifacts
+vendor/
+coverage.html
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (keep example, ignore real)
+config/whisper-oai.yaml
+*.local.yaml
+.env
+
+# Logs
+*.log
+logs/
