@@ -47,17 +47,17 @@ Reference for the OpenAI API surface we mirror:
 - [x] `docs/design.md` — package & type contracts (single source of truth)
 
 ## 2. Config layer — `internal/config/`
-- [ ] `config.go` — `Config`, `ServerConfig`, `WhisperConfig`, `AudioConfig`,
+- [x] `config.go` — `Config`, `ServerConfig`, `WhisperConfig`, `AudioConfig`,
       `LogConfig` structs with `mapstructure` tags matching the example YAML
-- [ ] `Load(path string) (*Config, error)` — viper: defaults → config file → env
+- [x] `Load(path string) (*Config, error)` — viper: defaults → config file → env
       (`WHISPER_OAI_*`) → flags; precedence flag > env > file > default
-- [ ] `Validate()` — bin/model non-empty, ports in range, hosts non-empty
+- [x] `Validate()` — bin/model non-empty, ports in range, hosts non-empty
       (no stat; serve warns on missing paths)
-- [ ] `ListenAddr()` / `WhisperURL()` helpers
-- [ ] unit test: load example config, validate, precedence
+- [x] `ListenAddr()` / `WhisperURL()` helpers
+- [x] unit test: load example config, validate, precedence
 
 ## 3. whisper-server process manager — `internal/whisper/`
-- [ ] `manager.go` — `Manager` struct wrapping `exec.Cmd`
+- [x] `manager.go` — `Manager` struct wrapping `exec.Cmd`
   - `NewManager(cfg config.WhisperConfig, log *slog.Logger) *Manager`
   - `Args()` — argv: `-m <model> [--flash-attn] -dev <device> --host <host>
     --port <port> [-t N] [-l LANG] <extra_args...>` (always emit `-dev`)
@@ -65,7 +65,7 @@ Reference for the OpenAI API surface we mirror:
     every 500ms up to ~120s
   - `Stop()` — SIGTERM, wait 10s, SIGKILL fallback; idempotent
   - `Health(ctx) error`, `URL() string`, `Running() bool`
-- [ ] `client.go` — `Client` for whisper-server HTTP
+- [x] `client.go` — `Client` for whisper-server HTTP
   - `Infer(ctx, InferRequest) (*InferResponse, error)` — multipart POST
     `/inference` with EXACT fields: file, temperature, response_format,
     language, prompt, translate ("true"/"false")
@@ -74,11 +74,11 @@ Reference for the OpenAI API surface we mirror:
   - `InferResponse{Text, Language, Duration, Segments []Segment, RawBody,
     ContentType}` + `Segment` struct (CompressionRatio/Seek zeroed)
   - `Health(ctx) error`
-- [ ] unit tests: argv construction (table-driven), health polling with a fake
+- [x] unit tests: argv construction (table-driven), health polling with a fake
       server, client Infer against an httptest server
 
 ## 3b. Audio extraction — `internal/audio/` (NEW — mp4 support)
-- [ ] `extract.go` — stdlib-only package:
+- [x] `extract.go` — stdlib-only package:
   - `IsVideo(filename, contentType string) bool` — video extensions
     (mp4, m4v, mov, mkv, webm, avi, wmv, flv, mpg, mpeg, 3gp, ts, m2ts, ogv)
     or `video/*` content type
@@ -88,7 +88,7 @@ Reference for the OpenAI API surface we mirror:
     (string, error)` — run ffmpeg:
     `-nostdin -hide_banner -loglevel error -y -i <src> -vn -ac 1 -ar 16000
     -c:a pcm_s16le <dst.wav>` (16 kHz mono PCM = whisper.cpp native)
-- [ ] `extract_test.go` — IsVideo table-driven; Spool round-trip; Extract
+- [x] `extract_test.go` — IsVideo table-driven; Spool round-trip; Extract
       against a fake ffmpeg (scripted shell binary) — no real ffmpeg needed
 
 ## 4. OpenAI-compatible HTTP server — `internal/server/`
@@ -102,19 +102,19 @@ Reference for the OpenAI API surface we mirror:
 - [x] `handlers.go` — parse OpenAI multipart, map to whisper `InferRequest`,
       call client, map response back to OpenAI shape (json / verbose_json /
       text / srt / vtt)
-- [ ] `handlers.go` — **wire in audio**: MaxBytesReader (413), Spool upload,
+- [x] `handlers.go` — **wire in audio**: MaxBytesReader (413), Spool upload,
       IsVideo → Extract (ffmpeg) → forward wav; extraction failure → 502
 - [x] `auth.go` — optional Bearer `api_key` middleware (skip when empty)
 - [x] `errors.go` — OpenAI-style `{"error": {"message", "type", "code"}}`
 - [x] `server_test.go` — httptest against handlers with a fake whisper-server
-- [ ] `server_test.go` — add video-upload test (fake ffmpeg) + 413 test
+- [x] `server_test.go` — add video-upload test (fake ffmpeg) + 413 test
 
 ## 5. CLI — `cmd/whisper-oai/` + `internal/cli/`
 - [x] `main.go` — thin: call `cli.Execute()`
 - [x] `internal/cli/root.go` — root cmd, persistent `--config` flag
 - [x] `internal/cli/serve.go` — `serve` cmd: load config, start whisper-server,
       start HTTP server, graceful shutdown on SIGINT/SIGTERM
-- [ ] `serve.go` — warn at startup if ffmpeg binary not found (video uploads
+- [x] `serve.go` — warn at startup if ffmpeg binary not found (video uploads
       would fail)
 - [x] `internal/cli/config.go` — `config init` (write example), `config get`,
       `config set`, `config path`
@@ -122,27 +122,30 @@ Reference for the OpenAI API surface we mirror:
 - [x] wire flags to viper so `serve --port 9000` overrides config
 
 ## 6. Docs
-- [ ] `README.md` — what it is, architecture diagram (ASCII), install,
+- [x] `README.md` — what it is, architecture diagram (ASCII), install,
       config reference (incl. audio section), CLI usage, OpenAI client example
       (curl + python), mp4/video note (ffmpeg dependency), security note
       (loopback-only whisper-server), build from source
 - [x] `docs/research.md` — endpoint mapping table (split into
       research-openai.md + research-whisper-server.md)
-- [ ] `.github/workflows/ci.yml` — go vet + test + build on push/PR
+- [x] `.github/workflows/ci.yml` — go vet + test + build on push/PR
 
 ## 7. Verify
-- [ ] `make build` compiles clean
-- [ ] `make vet` clean
-- [ ] `make test` passes (unit tests, no real GPU/ffmpeg needed)
-- [ ] `gofmt -l .` empty
-- [ ] manual smoke (if a whisper-server binary is available): start, hit
-      `/v1/models`, POST a small wav to `/v1/audio/transcriptions`
+- [x] `make build` compiles clean
+- [x] `make vet` clean
+- [x] `make test` passes (unit tests, no real GPU/ffmpeg needed)
+- [x] `gofmt -l .` empty
+- [ ] manual smoke (needs a host with whisper-server + model installed): start,
+      hit `/v1/models`, POST a small wav and an mp4 to
+      `/v1/audio/transcriptions`
+- [x] CLI smoke (this host): `version`, `config init/get/set`, `serve --help`
+      all verified against the built binary
 
 ## 8. Ship
-- [ ] commit on branch `feat/whisper-oai`
-- [ ] push to `git@github.com:tekmanic/whisper-oai.git`
+- [x] commit on branch `feat/whisper-oai`
+- [x] push to `git@github.com:tekmanic/whisper-oai.git`
       (use `github.pem` key, see TOOLS.md)
-- [ ] open PR (optional)
+- [x] open PR (optional)
 
 ---
 
