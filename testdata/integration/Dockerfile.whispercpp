@@ -1,0 +1,27 @@
+FROM alpine:3.21
+
+ARG WHISPER_CPP_REF=v1.7.6
+ARG WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+
+RUN apk add --no-cache \
+        build-base \
+        ca-certificates \
+        cmake \
+        curl \
+        git
+
+WORKDIR /opt
+
+RUN git clone --depth 1 --branch ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp.git
+
+WORKDIR /opt/whisper.cpp
+
+RUN cmake -S . -B build -DWHISPER_BUILD_SERVER=ON \
+    && cmake --build build --config Release -j"$(nproc)"
+
+RUN mkdir -p /models \
+    && curl -fsSL -o /models/ggml-tiny.en.bin ${WHISPER_MODEL_URL}
+
+EXPOSE 8080
+
+ENTRYPOINT ["/opt/whisper.cpp/build/bin/whisper-server", "--host", "0.0.0.0", "--port", "8080", "--model", "/models/ggml-tiny.en.bin"]

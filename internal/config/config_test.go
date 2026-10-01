@@ -39,6 +39,7 @@ func TestLoadDefaults(t *testing.T) {
 		Whisper: WhisperConfig{
 			Bin:       "/opt/whisper.cpp/build/bin/whisper-server",
 			Model:     "/opt/whisper.cpp/models/ggml-large-v3-turbo.bin",
+			RemoteURL: "",
 			Device:    0,
 			FlashAttn: true,
 			Host:      "127.0.0.1",
@@ -201,6 +202,19 @@ func TestValidate(t *testing.T) {
 		{"valid defaults", func(c *Config) {}, false},
 		{"empty bin", func(c *Config) { c.Whisper.Bin = "" }, true},
 		{"empty model", func(c *Config) { c.Whisper.Model = "" }, true},
+		{"remote mode allows empty local process fields", func(c *Config) {
+			c.Whisper.RemoteURL = "http://remote-whisper.internal:8080"
+			c.Whisper.Bin = ""
+			c.Whisper.Model = ""
+			c.Whisper.Host = ""
+			c.Whisper.Port = 0
+		}, false},
+		{"remote mode rejects invalid URL", func(c *Config) {
+			c.Whisper.RemoteURL = "://bad-url"
+		}, true},
+		{"remote mode rejects non-http scheme", func(c *Config) {
+			c.Whisper.RemoteURL = "ftp://example.com"
+		}, true},
 		{"server port zero", func(c *Config) { c.Server.Port = 0 }, true},
 		{"server port too big", func(c *Config) { c.Server.Port = 65536 }, true},
 		{"whisper port zero", func(c *Config) { c.Whisper.Port = 0 }, true},

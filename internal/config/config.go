@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type ServerConfig struct {
 type WhisperConfig struct {
 	Bin       string   `mapstructure:"bin"`        // default /opt/whisper.cpp/build/bin/whisper-server
 	Model     string   `mapstructure:"model"`      // default /opt/whisper.cpp/models/ggml-large-v3-turbo.bin
+	RemoteURL string   `mapstructure:"remote_url"` // default "" (if set, use remote backend and do not spawn local process)
 	Device    int      `mapstructure:"device"`     // default 0
 	FlashAttn bool     `mapstructure:"flash_attn"` // default true
 	Host      string   `mapstructure:"host"`       // default "127.0.0.1" (loopback only)
@@ -113,6 +115,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.model_name", "whisper-1")
 	v.SetDefault("whisper.bin", "/opt/whisper.cpp/build/bin/whisper-server")
 	v.SetDefault("whisper.model", "/opt/whisper.cpp/models/ggml-large-v3-turbo.bin")
+	v.SetDefault("whisper.remote_url", "")
 	v.SetDefault("whisper.device", 0)
 	v.SetDefault("whisper.flash_attn", true)
 	v.SetDefault("whisper.host", "127.0.0.1")
@@ -125,9 +128,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.level", "info")
 }
 
-// Validate checks that bin/model are non-empty, ports are in [1,65535], and
-// hosts are non-empty. It does NOT stat the bin/model files (so tests pass
-// without a real install); the serve command logs a warning if they are
+// Validate checks required fields and value ranges for both backend modes:
+// local process mode (whisper.remote_url empty) and remote backend mode
+// (whisper.remote_url set). It does NOT stat local bin/model files (so tests
+// pass without a real install); the serve command logs a warning if they are
 // missing.
 func (c *Config) Validate() error {
 	var problems []string
@@ -137,17 +141,31 @@ func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		problems = append(problems, fmt.Sprintf("server.port must be in [1,65535], got %d", c.Server.Port))
 	}
-	if c.Whisper.Bin == "" {
-		problems = append(problems, "whisper.bin must not be empty")
-	}
-	if c.Whisper.Model == "" {
-		problems = append(problems, "whisper.model must not be empty")
-	}
-	if c.Whisper.Host == "" {
-		problems = append(problems, "whisper.host must not be empty")
-	}
-	if c.Whisper.Port < 1 || c.Whisper.Port > 65535 {
-		problems = append(problems, fmt.Sprintf("whisper.port must be in [1,65535], got %d", c.Whisper.Port))
+	if remoteURL := strings.TrimSpace(c.Whisper.RemoteURL); remoteURL != "" {
+		u, err := url.Parse(remoteURL)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("whisper.remote_url must be a valid URL, got %q", c.Whisper.RemoteURL))
+		} else {
+			if u.Scheme != "http" && u.Scheme != "https" {
+				problems = append(problems, fmt.Sprintf("whisper.remote_url must use http or https, got %q", u.Scheme))
+			}
+			if u.Host == "" {
+				problems = append(problems, "whisper.remote_url must include a host")
+			}
+		}
+	} else {
+		if c.Whisper.Bin == "" {
+			problems = append(problems, "whisper.bin must not be empty")
+		}
+		if c.Whisper.Model == "" {
+			problems = append(problems, "whisper.model must not be empty")
+		}
+		if c.Whisper.Host == "" {
+			problems = append(problems, "whisper.host must not be empty")
+		}
+		if c.Whisper.Port < 1 || c.Whisper.Port > 65535 {
+			problems = append(problems, fmt.Sprintf("whisper.port must be in [1,65535], got %d", c.Whisper.Port))
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
@@ -162,5 +180,8 @@ func (c *Config) ListenAddr() string {
 
 // WhisperURL returns "http://host:port" for the whisper-server backend.
 func (c *Config) WhisperURL() string {
+	if u := strings.TrimSpace(c.Whisper.RemoteURL); u != "" {
+		return strings.TrimRight(u, "/")
+	}
 	return "http://" + net.JoinHostPort(c.Whisper.Host, strconv.Itoa(c.Whisper.Port))
 }

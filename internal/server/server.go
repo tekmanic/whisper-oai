@@ -43,7 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/models/{model}", s.handleModel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	return authMiddleware(s.cfg.Server.APIKey, mux)
+	return loggingMiddleware(s.log, authMiddleware(s.cfg.Server.APIKey, s.log, mux))
 }
 
 // Start runs http.Server on cfg.ListenAddr(); blocks until ctx is cancelled
@@ -81,4 +81,57 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return s.http.Shutdown(ctx)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(p)
+	r.bytes += n
+	return n, err
+}
+
+func loggingMiddleware(log *slog.Logger, next http.Handler) http.Handler {
+	if log == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rw, r)
+		if rw.status == 0 {
+			rw.status = http.StatusOK
+		}
+		dur := time.Since(start)
+
+		attrs := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"duration_ms", dur.Milliseconds(),
+			"bytes", rw.bytes,
+			"remote_addr", r.RemoteAddr,
+		}
+
+		switch {
+		case rw.status >= 500:
+			log.Error("http request completed", attrs...)
+		case rw.status >= 400:
+			log.Warn("http request completed", attrs...)
+		default:
+			log.Debug("http request completed", attrs...)
+		}
+	})
 }

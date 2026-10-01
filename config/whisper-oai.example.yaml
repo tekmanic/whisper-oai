@@ -27,6 +27,10 @@ whisper:
   bin: "/opt/whisper.cpp/build/bin/whisper-server"
   # Path to the GGML model file.
   model: "/opt/whisper.cpp/models/ggml-large-v3-turbo.bin"
+  # Optional remote whisper-server base URL. If set, whisper-oai uses this
+  # backend directly and does NOT start a local whisper-server process.
+  # Example: "http://127.0.0.1:8080"
+  remote_url: ""
   # GPU device index (whisper-server -dev / --device).
   device: 0
   # Enable flash attention (whisper-server --flash-attn).

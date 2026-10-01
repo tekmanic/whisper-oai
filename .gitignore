@@ -36,3 +36,13 @@ config/whisper-oai.yaml
 # Logs
 *.log
 logs/
+
+# Testdata
+testdata/*.wav
+testdata/*.mp3
+testdata/*.flac
+testdata/*.ogg
+testdata/*.m4a
+testdata/*.mp4
+testdata/*.avi
+testdata/*.mov

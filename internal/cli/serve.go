@@ -26,9 +26,11 @@ func newServeCmd() *cobra.Command {
 		host         string
 		port         int
 		apiKey       string
+		verbose      bool
 		modelName    string
 		whisperBin   string
 		whisperModel string
+		remoteURL    string
 		whisperHost  string
 		whisperPort  int
 		device       int
@@ -42,6 +44,9 @@ func newServeCmd() *cobra.Command {
 		Short: "Start whisper-server and the OpenAI-compatible API",
 		Long: `Starts the whisper-server child process, waits until it reports ready,
 then serves the OpenAI-compatible API on server.host:server.port.
+
+If whisper.remote_url is set (or --whisper-remote-url is provided), whisper-oai
+uses that backend directly and does not start a local whisper-server process.
 
 Configuration is loaded from the --config file; any flag given on the
 command line overrides the file and environment variables. The process
@@ -65,6 +70,9 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			}
 			if f.Changed("whisper-model") {
 				config.SetFlag("whisper.model", whisperModel)
+			}
+			if f.Changed("whisper-remote-url") {
+				config.SetFlag("whisper.remote_url", remoteURL)
 			}
 			if f.Changed("whisper-host") {
 				config.SetFlag("whisper.host", whisperHost)
@@ -97,12 +105,30 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 				return fmt.Errorf("invalid config: %w", err)
 			}
 
-			log := newLogger(cfg.Log.Level)
+			logLevel := cfg.Log.Level
+			if verbose {
+				logLevel = "debug"
+			}
+			log := newLogger(logLevel)
+			if verbose && cfg.Log.Level != "debug" {
+				log.Info("verbose logging enabled via --verbose", "configured_level", cfg.Log.Level, "effective_level", logLevel)
+			}
+			log.Debug("loaded configuration",
+				"listen_addr", cfg.ListenAddr(),
+				"whisper_url", cfg.WhisperURL(),
+				"whisper_remote", cfg.Whisper.RemoteURL != "",
+				"model_name", cfg.Server.ModelName,
+				"auth_enabled", cfg.Server.APIKey != "",
+				"max_upload_mb", cfg.Audio.MaxUploadMB,
+				"ffmpeg_bin", cfg.Audio.FfmpegBin,
+			)
 
-			// Validate does not stat these paths; warn if they are missing.
-			for _, p := range []string{cfg.Whisper.Bin, cfg.Whisper.Model} {
-				if _, err := os.Stat(p); err != nil {
-					log.Warn("configured path does not exist", "path", p)
+			if cfg.Whisper.RemoteURL == "" {
+				// Validate does not stat these paths; warn if they are missing.
+				for _, p := range []string{cfg.Whisper.Bin, cfg.Whisper.Model} {
+					if _, err := os.Stat(p); err != nil {
+						log.Warn("configured path does not exist", "path", p)
+					}
 				}
 			}
 			// ffmpeg is only needed for video uploads; warn early if absent.
@@ -115,7 +141,11 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			defer stop()
 
 			mgr := whisper.NewManager(cfg.Whisper, log)
-			log.Info("starting whisper-server", "bin", cfg.Whisper.Bin, "model", cfg.Whisper.Model)
+			if cfg.Whisper.RemoteURL == "" {
+				log.Info("starting whisper-server", "bin", cfg.Whisper.Bin, "model", cfg.Whisper.Model)
+			} else {
+				log.Info("using remote whisper-server", "url", mgr.URL())
+			}
 			log.Info("waiting for whisper-server readiness", "url", mgr.URL())
 			if err := mgr.Start(ctx); err != nil {
 				return fmt.Errorf("start whisper-server: %w", err)
@@ -159,9 +189,11 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 	fs.StringVar(&host, "host", "", "host/interface the API server listens on (server.host)")
 	fs.IntVar(&port, "port", 0, "port the API server listens on (server.port)")
 	fs.StringVar(&apiKey, "api-key", "", "require Bearer-token auth with this key (server.api_key)")
+	fs.BoolVar(&verbose, "verbose", false, "enable verbose debug logging")
 	fs.StringVar(&modelName, "model-name", "", "model name advertised by /v1/models (server.model_name)")
 	fs.StringVar(&whisperBin, "whisper-bin", "", "path to the whisper-server binary (whisper.bin)")
 	fs.StringVar(&whisperModel, "whisper-model", "", "path to the GGML model file (whisper.model)")
+	fs.StringVar(&remoteURL, "whisper-remote-url", "", "remote whisper-server base URL (whisper.remote_url), e.g. http://127.0.0.1:8080")
 	fs.StringVar(&whisperHost, "whisper-host", "", "host whisper-server binds to (whisper.host)")
 	fs.IntVar(&whisperPort, "whisper-port", 0, "port whisper-server binds to (whisper.port)")
 	fs.IntVar(&device, "device", 0, "GPU device index for whisper-server (whisper.device)")

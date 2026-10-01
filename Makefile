@@ -4,7 +4,7 @@ PKG         := ./...
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build run test vet fmt tidy clean install
+.PHONY: all build run test itest vet fmt tidy clean install
 
 all: build
 
@@ -20,6 +20,10 @@ run: build
 ## test: run unit tests
 test:
 	go test $(PKG) -race -count=1
+
+## itest: run testcontainers integration tests
+itest:
+	go test -tags=integration ./internal/integration -count=1 -v -timeout=30m
 
 ## vet: static analysis
 vet:

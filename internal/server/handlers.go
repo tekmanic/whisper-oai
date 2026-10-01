@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/tekmanic/whisper-oai/internal/audio"
 	"github.com/tekmanic/whisper-oai/internal/whisper"
@@ -77,6 +78,14 @@ func (s *Server) handleTranslation(w http.ResponseWriter, r *http.Request) {
 // handleInfer parses the OpenAI multipart request, forwards it to
 // whisper-server, and writes the response in the requested format.
 func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate bool) {
+	start := time.Now()
+	s.log.Debug("received inference request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"translate", translate,
+		"remote_addr", r.RemoteAddr,
+	)
+
 	// Enforce the configured upload size limit (0 = unlimited).
 	if s.cfg.Audio.MaxUploadMB > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, int64(s.cfg.Audio.MaxUploadMB)<<20)
@@ -85,20 +94,24 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
+			s.log.Warn("multipart form exceeded max upload size", "max_upload_mb", s.cfg.Audio.MaxUploadMB)
 			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
 				fmt.Sprintf("upload exceeds the maximum size of %d MB", s.cfg.Audio.MaxUploadMB), "")
 			return
 		}
+		s.log.Warn("failed to parse multipart form", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to parse multipart form", "")
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
+		s.log.Warn("request missing file field", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "no 'file' field in the request", "file")
 		return
 	}
 	defer file.Close()
+	s.log.Debug("received upload", "filename", header.Filename, "content_type", header.Header.Get("Content-Type"))
 
 	// Spool the upload to a temp file so large uploads stream to disk (not
 	// memory) and video files can be addressed by path for ffmpeg.
@@ -145,6 +158,7 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 
 	model := r.FormValue("model")
 	if model != s.cfg.Server.ModelName {
+		s.log.Warn("request used invalid model", "got", model, "expected", s.cfg.Server.ModelName)
 		writeError(w, http.StatusBadRequest, "invalid_request_error",
 			fmt.Sprintf("Invalid value for 'model'. Expected %q.", s.cfg.Server.ModelName), "model")
 		return
@@ -155,6 +169,7 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		format = "json"
 	}
 	if !validFormats[format] {
+		s.log.Warn("request used invalid response format", "response_format", format)
 		writeError(w, http.StatusBadRequest, "invalid_request_error",
 			"Invalid value for 'response_format'. Expected one of: json, text, srt, verbose_json, vtt.",
 			"response_format")
@@ -165,10 +180,19 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 	if v := r.FormValue("temperature"); v != "" {
 		temperature, err = strconv.ParseFloat(v, 64)
 		if err != nil {
+			s.log.Warn("request used invalid temperature", "temperature", v)
 			writeError(w, http.StatusBadRequest, "invalid_request_error", "Invalid value for 'temperature'.", "temperature")
 			return
 		}
 	}
+
+	s.log.Info("forwarding inference request",
+		"filename", inferName,
+		"translate", translate,
+		"response_format", format,
+		"language", r.FormValue("language"),
+		"temperature", temperature,
+	)
 
 	req := whisper.InferRequest{
 		File:           inferFile,
@@ -186,6 +210,13 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		writeError(w, http.StatusBadGateway, "server_error", fmt.Sprintf("upstream inference failed: %v", err), "")
 		return
 	}
+	s.log.Info("inference completed",
+		"filename", inferName,
+		"response_format", format,
+		"text_len", len(resp.Text),
+		"raw_len", len(resp.RawBody),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	s.writeInferResponse(w, format, translate, resp)
 }
 
@@ -240,6 +271,7 @@ func (s *Server) writeInferResponse(w http.ResponseWriter, format string, transl
 
 // handleModels serves GET /v1/models.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	s.log.Debug("serving model list")
 	writeJSON(w, http.StatusOK, modelList{
 		Object: "list",
 		Data:   []modelInfo{s.modelInfo()},
@@ -251,10 +283,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("model")
 	if id != s.cfg.Server.ModelName {
+		s.log.Warn("requested unknown model", "model", id)
 		writeError(w, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("The model '%s' does not exist", id), "model")
 		return
 	}
+	s.log.Debug("serving model details", "model", id)
 	writeJSON(w, http.StatusOK, s.modelInfo())
 }
 
@@ -270,6 +304,7 @@ func (s *Server) modelInfo() modelInfo {
 
 // handleHealthz serves GET /healthz (proxy liveness).
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	s.log.Debug("serving health check")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

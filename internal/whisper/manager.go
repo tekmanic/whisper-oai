@@ -11,6 +11,7 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,12 +22,14 @@ import (
 // Manager supervises a whisper-server child process: it builds the argv,
 // launches the binary, waits for readiness, and handles shutdown.
 type Manager struct {
-	cfg  config.WhisperConfig
-	log  *slog.Logger
-	cli  *Client
-	cmd  *exec.Cmd
-	done chan struct{}
-	mu   sync.Mutex
+	cfg       config.WhisperConfig
+	log       *slog.Logger
+	cli       *Client
+	url       string
+	useRemote bool
+	cmd       *exec.Cmd
+	done      chan struct{}
+	mu        sync.Mutex
 
 	// Readiness/shutdown tunables. NewManager sets production defaults;
 	// tests may override them.
@@ -41,10 +44,18 @@ func NewManager(cfg config.WhisperConfig, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	url := "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	useRemote := false
+	if remoteURL := strings.TrimSpace(cfg.RemoteURL); remoteURL != "" {
+		url = strings.TrimRight(remoteURL, "/")
+		useRemote = true
+	}
 	return &Manager{
 		cfg:                cfg,
 		log:                log,
-		cli:                NewClient("http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))),
+		cli:                NewClient(url),
+		url:                url,
+		useRemote:          useRemote,
 		healthPollInterval: 500 * time.Millisecond,
 		healthTimeout:      120 * time.Second,
 		stopGrace:          10 * time.Second,
@@ -59,6 +70,9 @@ func NewManager(cfg config.WhisperConfig, log *slog.Logger) *Manager {
 // --host, --port, -t (only if Threads > 0), -l (only if Language is set and
 // != "auto"), then ExtraArgs.
 func (m *Manager) Args() []string {
+	if m.useRemote {
+		return nil
+	}
 	args := []string{"-m", m.cfg.Model}
 	if m.cfg.FlashAttn {
 		args = append(args, "--flash-attn")
@@ -83,6 +97,34 @@ func (m *Manager) Args() []string {
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.useRemote {
+		deadline := time.Now().Add(m.healthTimeout)
+		attempt := 0
+		for {
+			attempt++
+			err := m.cli.Health(ctx)
+			if err == nil {
+				m.log.Info("remote whisper-server is ready", "url", m.URL())
+				return nil
+			}
+			if attempt == 1 || attempt%10 == 0 {
+				m.log.Debug("waiting for remote whisper-server readiness",
+					"url", m.URL(),
+					"attempt", attempt,
+					"error", err,
+				)
+			}
+			select {
+			case <-ctx.Done():
+				m.log.Warn("remote whisper-server readiness cancelled", "error", ctx.Err())
+				return fmt.Errorf("start cancelled: %w", ctx.Err())
+			case <-time.After(m.healthPollInterval):
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("whisper-server did not become ready within %s", m.healthTimeout)
+			}
+		}
+	}
 
 	if m.cmd != nil {
 		return fmt.Errorf("whisper-server is already running")
@@ -117,16 +159,27 @@ func (m *Manager) Start(ctx context.Context) error {
 	}()
 
 	deadline := time.Now().Add(m.healthTimeout)
+	attempt := 0
 	for {
-		if err := m.cli.Health(ctx); err == nil {
+		attempt++
+		err := m.cli.Health(ctx)
+		if err == nil {
 			m.log.Info("whisper-server is ready", "url", m.URL())
 			return nil
+		}
+		if attempt == 1 || attempt%10 == 0 {
+			m.log.Debug("waiting for local whisper-server readiness",
+				"url", m.URL(),
+				"attempt", attempt,
+				"error", err,
+			)
 		}
 		select {
 		case <-done:
 			m.resetLocked()
 			return fmt.Errorf("whisper-server exited before becoming ready")
 		case <-ctx.Done():
+			m.log.Warn("local whisper-server readiness cancelled", "error", ctx.Err())
 			m.stopLocked()
 			return fmt.Errorf("start cancelled: %w", ctx.Err())
 		case <-time.After(m.healthPollInterval):
@@ -149,14 +202,17 @@ func (m *Manager) Stop() error {
 // stopLocked stops the child process. The caller must hold m.mu.
 func (m *Manager) stopLocked() error {
 	if m.cmd == nil || m.cmd.Process == nil {
+		m.log.Debug("stop requested but whisper-server is not running")
 		return nil
 	}
 	select {
 	case <-m.done:
+		m.log.Debug("whisper-server already exited")
 		m.resetLocked()
 		return nil
 	default:
 	}
+	m.log.Info("stopping whisper-server", "grace_timeout", m.stopGrace.String())
 	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		// The process is already gone; wait for Wait to finish.
 		<-m.done
@@ -165,11 +221,14 @@ func (m *Manager) stopLocked() error {
 	}
 	select {
 	case <-m.done:
+		m.log.Info("whisper-server stopped gracefully")
 	case <-time.After(m.stopGrace):
+		m.log.Warn("whisper-server did not stop in time; sending SIGKILL")
 		if err := m.cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("kill whisper-server: %w", err)
 		}
 		<-m.done
+		m.log.Info("whisper-server killed")
 	}
 	m.resetLocked()
 	return nil
@@ -188,7 +247,7 @@ func (m *Manager) Health(ctx context.Context) error {
 
 // URL returns the base URL (http://host:port) of the whisper-server backend.
 func (m *Manager) URL() string {
-	return "http://" + net.JoinHostPort(m.cfg.Host, strconv.Itoa(m.cfg.Port))
+	return m.url
 }
 
 // Running reports whether the child process is alive.

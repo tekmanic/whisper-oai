@@ -356,3 +356,42 @@ func TestStartMissingBinary(t *testing.T) {
 		t.Fatal("Running() = true after failed Start, want false")
 	}
 }
+
+func TestURLRemote(t *testing.T) {
+	m := NewManager(config.WhisperConfig{RemoteURL: "http://remote.example.com:8080/"}, testLogger())
+	if got := m.URL(); got != "http://remote.example.com:8080" {
+		t.Errorf("URL() = %q, want http://remote.example.com:8080", got)
+	}
+}
+
+func TestStartRemoteNoProcess(t *testing.T) {
+	ts := healthServer(t, http.StatusOK)
+	m := NewManager(config.WhisperConfig{
+		RemoteURL: ts.URL,
+		Bin:       "/nonexistent/whisper-server",
+		Model:     "/m.bin",
+	}, testLogger())
+	m.healthPollInterval = 20 * time.Millisecond
+	m.healthTimeout = 2 * time.Second
+
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if m.Running() {
+		t.Fatal("Running() = true in remote mode, want false")
+	}
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestStartRemoteTimeout(t *testing.T) {
+	ts := healthServer(t, http.StatusServiceUnavailable)
+	m := NewManager(config.WhisperConfig{RemoteURL: ts.URL}, testLogger())
+	m.healthPollInterval = 20 * time.Millisecond
+	m.healthTimeout = 200 * time.Millisecond
+
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("Start: expected readiness timeout in remote mode")
+	}
+}

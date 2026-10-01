@@ -45,6 +45,10 @@ whisper:
   bin: "/opt/whisper.cpp/build/bin/whisper-server"
   # Path to the GGML model file.
   model: "/opt/whisper.cpp/models/ggml-large-v3-turbo.bin"
+	# Optional remote whisper-server base URL. If set, whisper-oai will use this
+	# backend directly and will NOT start a local whisper-server process.
+	# Example: "http://127.0.0.1:8080"
+	remote_url: ""
   # GPU device index (whisper-server -dev / --device).
   device: 0
   # Enable flash attention (whisper-server --flash-attn).
@@ -209,6 +213,8 @@ func lookupValue(cfg *config.Config, key string) (string, bool) {
 		return cfg.Whisper.Bin, true
 	case "whisper.model":
 		return cfg.Whisper.Model, true
+	case "whisper.remote_url":
+		return cfg.Whisper.RemoteURL, true
 	case "whisper.device":
 		return strconv.Itoa(cfg.Whisper.Device), true
 	case "whisper.flash_attn":
@@ -249,6 +255,8 @@ func setValue(cfg *config.Config, key, value string) error {
 		cfg.Whisper.Bin = value
 	case "whisper.model":
 		cfg.Whisper.Model = value
+	case "whisper.remote_url":
+		cfg.Whisper.RemoteURL = value
 	case "whisper.device":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -311,6 +319,7 @@ func writeConfigFile(path string, cfg *config.Config) error {
 	v.Set("server.model_name", cfg.Server.ModelName)
 	v.Set("whisper.bin", cfg.Whisper.Bin)
 	v.Set("whisper.model", cfg.Whisper.Model)
+	v.Set("whisper.remote_url", cfg.Whisper.RemoteURL)
 	v.Set("whisper.device", cfg.Whisper.Device)
 	v.Set("whisper.flash_attn", cfg.Whisper.FlashAttn)
 	v.Set("whisper.host", cfg.Whisper.Host)

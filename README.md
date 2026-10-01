@@ -189,8 +189,9 @@ whisper-oai version   Print the version
 ```
 
 `serve` flags (each maps to a config key): `--host`, `--port`, `--api-key`,
-`--model-name`, `--whisper-bin`, `--whisper-model`, `--whisper-host`,
-`--whisper-port`, `--device`, `--threads`, `--language`, `--no-flash-attn`.
+`--model-name`, `--whisper-bin`, `--whisper-model`, `--whisper-remote-url`,
+`--whisper-host`, `--whisper-port`, `--device`, `--threads`, `--language`,
+`--no-flash-attn`.
 
 ## Configuration
 
@@ -207,6 +208,7 @@ Precedence: **flag > env > file > default**.
 | `server.model_name` | `whisper-1` | Model id advertised by `/v1/models` |
 | `whisper.bin` | `/opt/whisper.cpp/build/bin/whisper-server` | whisper-server binary |
 | `whisper.model` | `/opt/whisper.cpp/models/ggml-large-v3-turbo.bin` | GGML model file |
+| `whisper.remote_url` | `""` | Optional remote whisper-server base URL; when set, no local process is started |
 | `whisper.device` | `0` | GPU device index (`-dev`) |
 | `whisper.flash_attn` | `true` | Enable flash attention (`--flash-attn`) |
 | `whisper.host` | `127.0.0.1` | Backend bind host — **keep loopback** |
@@ -237,9 +239,10 @@ warning at startup and video uploads return a 502 (audio uploads still work).
 
 ## Security notes
 
-- **whisper-server is loopback-only.** It binds `127.0.0.1:<whisper.port>`;
-  only the Go proxy can reach it. Do not change `whisper.host` to a public
-  interface.
+- **Local whisper-server is loopback-only.** In local mode it binds
+  `127.0.0.1:<whisper.port>` so only the Go proxy can reach it. Do not change
+  `whisper.host` to a public interface. In remote mode (`whisper.remote_url`),
+  secure the remote endpoint separately.
 - **The public port is `server.port`.** If you expose it beyond localhost, set
   `server.api_key` and put TLS in front (reverse proxy).
 - **Uploads are size-capped** by `audio.max_upload_mb` (HTTP 413 when

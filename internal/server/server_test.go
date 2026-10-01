@@ -293,7 +293,7 @@ func TestAuthMiddleware(t *testing.T) {
 
 	t.Run("empty key is passthrough", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		authMiddleware("", next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		authMiddleware("", nil, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
@@ -301,7 +301,7 @@ func TestAuthMiddleware(t *testing.T) {
 
 	t.Run("missing header is 401", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		authMiddleware("secret", next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		authMiddleware("secret", nil, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401 (body %s)", rec.Code, rec.Body.String())
 		}
@@ -322,7 +322,7 @@ func TestAuthMiddleware(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Authorization", "Bearer wrong")
 		rec := httptest.NewRecorder()
-		authMiddleware("secret", next).ServeHTTP(rec, req)
+		authMiddleware("secret", nil, next).ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", rec.Code)
 		}
@@ -332,7 +332,7 @@ func TestAuthMiddleware(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
-		authMiddleware("secret", next).ServeHTTP(rec, req)
+		authMiddleware("secret", nil, next).ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}

@@ -2,13 +2,14 @@ package server
 
 import (
 	"crypto/subtle"
+	"log/slog"
 	"net/http"
 )
 
 // authMiddleware returns a middleware that, when apiKey != "", requires
 // "Authorization: Bearer <apiKey>" (401 otherwise). When apiKey == "", it is a
 // no-op passthrough.
-func authMiddleware(apiKey string, next http.Handler) http.Handler {
+func authMiddleware(apiKey string, log *slog.Logger, next http.Handler) http.Handler {
 	if apiKey == "" {
 		return next
 	}
@@ -23,6 +24,13 @@ func authMiddleware(apiKey string, next http.Handler) http.Handler {
 		if ok {
 			next.ServeHTTP(w, r)
 			return
+		}
+		if log != nil {
+			log.Warn("request rejected: invalid api key",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
+			)
 		}
 		writeError(w, http.StatusUnauthorized, "authentication_error", "Invalid API key", "")
 	})
