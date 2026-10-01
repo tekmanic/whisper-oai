@@ -6,8 +6,7 @@
 *.dll
 *.so
 *.dylib
-whisper-oai
-whisper-oai-*
+
 
 # Test binary
 *.test
