@@ -64,6 +64,17 @@ audio:
   max_upload_mb: 2048
 
 # ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+metrics:
+  # Enable the GET /metrics endpoint (Prometheus text format). Set false (or
+  # pass --no-metrics) to disable.
+  enabled: true
+  # How often the background poller refreshes the whisper-server health and
+  # process-liveness gauges. Must be >= 1s.
+  health_interval: "15s"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log:

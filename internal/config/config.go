@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -21,6 +22,7 @@ type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	Whisper WhisperConfig `mapstructure:"whisper"`
 	Audio   AudioConfig   `mapstructure:"audio"`
+	Metrics MetricsConfig `mapstructure:"metrics"`
 	Log     LogConfig     `mapstructure:"log"`
 }
 
@@ -51,6 +53,12 @@ type AudioConfig struct {
 	FfmpegBin   string `mapstructure:"ffmpeg_bin"`    // default "ffmpeg"
 	TempDir     string `mapstructure:"temp_dir"`      // default "" (os.TempDir)
 	MaxUploadMB int    `mapstructure:"max_upload_mb"` // default 2048
+}
+
+// MetricsConfig configures Prometheus metrics.
+type MetricsConfig struct {
+	Enabled        bool          `mapstructure:"enabled"`         // default true
+	HealthInterval time.Duration `mapstructure:"health_interval"` // default 15s
 }
 
 // LogConfig configures logging.
@@ -125,6 +133,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audio.ffmpeg_bin", "ffmpeg")
 	v.SetDefault("audio.temp_dir", "")
 	v.SetDefault("audio.max_upload_mb", 2048)
+	v.SetDefault("metrics.enabled", true)
+	v.SetDefault("metrics.health_interval", "15s")
 	v.SetDefault("log.level", "info")
 }
 
@@ -166,6 +176,9 @@ func (c *Config) Validate() error {
 		if c.Whisper.Port < 1 || c.Whisper.Port > 65535 {
 			problems = append(problems, fmt.Sprintf("whisper.port must be in [1,65535], got %d", c.Whisper.Port))
 		}
+	}
+	if c.Metrics.Enabled && c.Metrics.HealthInterval < time.Second {
+		problems = append(problems, fmt.Sprintf("metrics.health_interval must be >= 1s, got %s", c.Metrics.HealthInterval))
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // clearFlags resets the package-level flag overrides between tests.
@@ -52,6 +53,10 @@ func TestLoadDefaults(t *testing.T) {
 			FfmpegBin:   "ffmpeg",
 			TempDir:     "",
 			MaxUploadMB: 2048,
+		},
+		Metrics: MetricsConfig{
+			Enabled:        true,
+			HealthInterval: 15 * time.Second,
 		},
 		Log: LogConfig{Level: "info"},
 	}

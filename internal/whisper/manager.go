@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tekmanic/whisper-oai/internal/config"
+	"github.com/tekmanic/whisper-oai/internal/metrics"
 )
 
 // Manager supervises a whisper-server child process: it builds the argv,
@@ -30,6 +31,7 @@ type Manager struct {
 	cmd       *exec.Cmd
 	done      chan struct{}
 	mu        sync.Mutex
+	metrics   *metrics.Metrics
 
 	// Readiness/shutdown tunables. NewManager sets production defaults;
 	// tests may override them.
@@ -60,6 +62,12 @@ func NewManager(cfg config.WhisperConfig, log *slog.Logger) *Manager {
 		healthTimeout:      120 * time.Second,
 		stopGrace:          10 * time.Second,
 	}
+}
+
+// SetMetrics attaches the Prometheus metrics collector. When nil (the
+// default), no metrics are recorded. Call before Start.
+func (m *Manager) SetMetrics(mt *metrics.Metrics) {
+	m.metrics = mt
 }
 
 // Args returns the argv (without the binary path) that Start will use, e.g.
@@ -97,6 +105,7 @@ func (m *Manager) Args() []string {
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	start := time.Now()
 	if m.useRemote {
 		deadline := time.Now().Add(m.healthTimeout)
 		attempt := 0
@@ -104,6 +113,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			attempt++
 			err := m.cli.Health(ctx)
 			if err == nil {
+				m.metrics.SetWhisperStartDuration(time.Since(start))
 				m.log.Info("remote whisper-server is ready", "url", m.URL())
 				return nil
 			}
@@ -164,6 +174,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		attempt++
 		err := m.cli.Health(ctx)
 		if err == nil {
+			m.metrics.SetWhisperStartDuration(time.Since(start))
 			m.log.Info("whisper-server is ready", "url", m.URL())
 			return nil
 		}

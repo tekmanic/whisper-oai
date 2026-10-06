@@ -129,15 +129,34 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		inferFile io.Reader
 		inferName = header.Filename
 	)
-	if audio.IsVideo(header.Filename, header.Header.Get("Content-Type")) {
+	isVideo := audio.IsVideo(header.Filename, header.Header.Get("Content-Type"))
+	if st, statErr := os.Stat(srcPath); statErr == nil {
+		if isVideo {
+			s.metrics.ObserveUploadBytes("video", st.Size())
+		} else {
+			s.metrics.ObserveUploadBytes("audio", st.Size())
+		}
+	}
+	// inferStart marks the beginning of the inference work (ffmpeg extraction
+	// for video, then the upstream call). inference_duration_seconds spans this
+	// whole window; upstream_inference_duration_seconds covers only the
+	// whisper-server call itself.
+	inferStart := time.Now()
+	if isVideo {
 		s.log.Info("video upload detected; extracting audio track", "file", header.Filename)
+		s.metrics.IncFFmpegInFlight()
+		extractStart := time.Now()
 		wavPath, err := audio.Extract(r.Context(), srcPath, s.cfg.Audio.FfmpegBin, s.cfg.Audio.TempDir, s.log)
 		if err != nil {
+			s.metrics.DecFFmpegInFlight()
+			s.metrics.ObserveFFmpegExtraction("error", time.Since(extractStart))
 			s.log.Error("audio extraction failed", "error", err)
 			writeError(w, http.StatusBadGateway, "server_error",
 				fmt.Sprintf("audio extraction from video failed: %v", err), "")
 			return
 		}
+		s.metrics.DecFFmpegInFlight()
+		s.metrics.ObserveFFmpegExtraction("success", time.Since(extractStart))
 		defer os.Remove(wavPath)
 		wf, err := os.Open(wavPath)
 		if err != nil {
@@ -204,12 +223,22 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		ResponseFormat: format,
 	}
 
+	task := "transcribe"
+	if translate {
+		task = "translate"
+	}
+	upstreamStart := time.Now()
 	resp, err := s.cli.Infer(r.Context(), req)
+	upstreamDur := time.Since(upstreamStart)
 	if err != nil {
+		s.metrics.ObserveInference(task, "error", time.Since(inferStart))
 		s.log.Error("inference failed", "error", err)
 		writeError(w, http.StatusBadGateway, "server_error", fmt.Sprintf("upstream inference failed: %v", err), "")
 		return
 	}
+	s.metrics.ObserveInference(task, "success", time.Since(inferStart))
+	s.metrics.ObserveUpstreamInference(upstreamDur)
+	s.metrics.ObserveTranscribedSeconds(task, resp.Duration)
 	s.log.Info("inference completed",
 		"filename", inferName,
 		"response_format", format,

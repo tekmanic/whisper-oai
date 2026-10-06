@@ -50,6 +50,9 @@ sole consumer of the backend port.
   clean precedence: `flag > env (WHISPER_OAI_*) > file > default`.
 - **Optional auth** — set `server.api_key` and every request needs
   `Authorization: Bearer <key>`.
+- **Prometheus metrics** — a `GET /metrics` endpoint (enabled by default)
+  exposes request, inference, ffmpeg, and whisper-server health metrics in
+  Prometheus text format.
 - **Loopback-only backend** — `whisper-server` is unreachable from the
   network; only the proxy can talk to it.
 
@@ -62,6 +65,7 @@ sole consumer of the backend port.
 | GET    | `/v1/models`               | lists the configured model                       |
 | GET    | `/v1/models/{model}`       | 404 unless it matches `server.model_name`        |
 | GET    | `/healthz`                 | proxy liveness                                   |
+| GET    | `/metrics`                 | Prometheus metrics (when `metrics.enabled`)      |
 
 `response_format` accepts `json` (default), `verbose_json`, `text`, `srt`,
 `vtt`.
@@ -191,7 +195,7 @@ whisper-oai version   Print the version
 `serve` flags (each maps to a config key): `--host`, `--port`, `--api-key`,
 `--model-name`, `--whisper-bin`, `--whisper-model`, `--whisper-remote-url`,
 `--whisper-host`, `--whisper-port`, `--device`, `--threads`, `--language`,
-`--no-flash-attn`.
+`--no-flash-attn`, `--no-metrics`.
 
 ## Configuration
 
@@ -219,6 +223,8 @@ Precedence: **flag > env > file > default**.
 | `audio.ffmpeg_bin` | `ffmpeg` | ffmpeg binary (video uploads only) |
 | `audio.temp_dir` | `""` | Spool/extract dir (empty = `os.TempDir()`) |
 | `audio.max_upload_mb` | `2048` | Max upload size in MB (0 = unlimited; 413 when exceeded) |
+| `metrics.enabled` | `true` | Enable the `/metrics` Prometheus endpoint |
+| `metrics.health_interval` | `15s` | How often to poll whisper-server health for the up/running gauges |
 | `log.level` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ## Video / large-file handling
@@ -236,6 +242,59 @@ any `video/*` content type), whisper-oai:
 
 Plain audio uploads skip ffmpeg entirely. If ffmpeg is missing, `serve` logs a
 warning at startup and video uploads return a 502 (audio uploads still work).
+
+## Metrics
+
+whisper-oai exposes a Prometheus endpoint at `GET /metrics` (enabled by
+default; disable with `metrics.enabled: false` or `--no-metrics`). It is served
+on the same port as the API and, like every other route, requires
+`Authorization: Bearer <key>` when `server.api_key` is set.
+
+All metrics are prefixed `whisper_oai_`. In addition to the app metrics below,
+the standard Go runtime (`go_*`) and process (`process_*`) collectors are
+included.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `whisper_oai_http_requests_total` | counter | `method`, `path`, `status` | Total API requests by method, route, and status code |
+| `whisper_oai_http_request_duration_seconds` | histogram | `method`, `path` | End-to-end request duration |
+| `whisper_oai_http_requests_in_flight` | gauge | — | Requests currently being served |
+| `whisper_oai_http_request_bytes` | histogram | `direction`, `path` | Request/response body sizes |
+| `whisper_oai_inference_requests_total` | counter | `task`, `status` | Inference requests forwarded to whisper-server (`task` = transcribe/translate, `status` = success/error) |
+| `whisper_oai_inference_duration_seconds` | histogram | `task` | Full inference duration (spool → response) |
+| `whisper_oai_upstream_inference_duration_seconds` | histogram | — | Time spent inside whisper-server |
+| `whisper_oai_transcribed_seconds_total` | counter | `task` | Total duration of audio transcribed (throughput) |
+| `whisper_oai_upload_bytes` | histogram | `kind` | Uploaded media size (`kind` = audio/video) |
+| `whisper_oai_whisper_server_up` | gauge | — | whisper-server `/health` status (1 = up) |
+| `whisper_oai_whisper_server_process_running` | gauge | — | Local child process alive (0 in remote mode) |
+| `whisper_oai_whisper_server_start_duration_seconds` | gauge | — | Time to become ready after startup |
+| `whisper_oai_ffmpeg_extractions_total` | counter | `status` | ffmpeg audio extractions by outcome |
+| `whisper_oai_ffmpeg_extraction_duration_seconds` | histogram | — | ffmpeg extraction duration |
+| `whisper_oai_ffmpeg_extractions_in_flight` | gauge | — | ffmpeg extractions currently running |
+
+The `path` label uses the mux route pattern (e.g. `POST /v1/audio/transcriptions`)
+rather than the raw URL, so label cardinality stays bounded.
+
+`whisper_oai_whisper_server_up` and `whisper_oai_whisper_server_process_running`
+are refreshed by a background poller every `metrics.health_interval` (default
+15s).
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: whisper-oai
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:8000"]
+    # Only needed when server.api_key is set:
+    # basic_auth:
+    #   password: "<your api key>"
+```
+
+> Note: Prometheus has no native Bearer-token scrape auth. If you enable
+> `server.api_key`, either scrape through a small auth-injecting proxy, or run
+> whisper-oai without an API key on a loopback-only interface.
 
 ## Security notes
 
@@ -271,6 +330,7 @@ internal/config/        Viper config loading + validation
 internal/whisper/       whisper-server process manager + HTTP client
 internal/server/        OpenAI-compatible HTTP server + handlers
 internal/audio/         upload spooling + ffmpeg audio extraction
+internal/metrics/       Prometheus collectors + /metrics handler
 config/                 example config
 docs/                   design + research notes
 ```

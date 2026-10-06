@@ -16,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/tekmanic/whisper-oai/internal/config"
+	"github.com/tekmanic/whisper-oai/internal/metrics"
 )
 
 func testLogger() *slog.Logger {
@@ -240,6 +243,49 @@ func TestStartStop(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop after restart: %v", err)
 	}
+}
+
+func TestStartRecordsStartDuration(t *testing.T) {
+	ts := healthServer(t, http.StatusOK)
+	host, port := hostPort(t, ts.URL)
+	bin := writeScript(t, "sleep 30\n")
+
+	m := NewManager(config.WhisperConfig{
+		Bin:       bin,
+		Model:     "/models/fake.bin",
+		FlashAttn: true,
+		Host:      host,
+		Port:      port,
+	}, testLogger())
+	m.healthPollInterval = 20 * time.Millisecond
+	m.healthTimeout = 5 * time.Second
+	mt := metrics.New()
+	m.SetMetrics(mt)
+
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer m.Stop()
+
+	if got := gaugeValue(t, mt.Registry(), "whisper_oai_whisper_server_start_duration_seconds"); got <= 0 {
+		t.Errorf("start duration gauge = %v, want > 0", got)
+	}
+}
+
+// gaugeValue returns the value of the (single-series) gauge named name.
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name && len(mf.GetMetric()) > 0 {
+			return mf.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return 0
 }
 
 func TestStartProcessExitsEarly(t *testing.T) {
