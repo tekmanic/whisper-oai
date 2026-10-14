@@ -64,6 +64,35 @@ audio:
   max_upload_mb: 2048
 
 # ---------------------------------------------------------------------------
+# URL ingestion (yt-dlp)
+# ---------------------------------------------------------------------------
+# When enabled, the API also accepts a JSON body with a "url" field on
+# POST /v1/audio/transcriptions and /v1/audio/translations. The media is
+# downloaded with yt-dlp (YouTube, Vimeo, Facebook, Twitch, direct media
+# URLs, ...) and then processed exactly like an upload (video containers are
+# stripped to audio with ffmpeg first).
+download:
+  # Enable URL ingestion. Set false (or pass --no-downloader) to reject JSON
+  # "url" requests with HTTP 400.
+  enabled: true
+  # Path to the yt-dlp binary.
+  bin: "yt-dlp"
+  # Per-download timeout.
+  timeout: "10m"
+  # yt-dlp format selector. "bv*+ba/b" = best video + best audio (merged with
+  # ffmpeg), falling back to the best single file. Use "ba/b" to download
+  # audio only (smaller, no video stream needed for transcription).
+  format: "bv*+ba/b"
+  # Extra arguments appended verbatim to the yt-dlp command line (before the
+  # URL). Use for cookies, credentials, or anything not covered above,
+  # e.g. ["--cookies-from-browser", "firefox"].
+  extra_args: []
+  # Optional host allowlist (SSRF guardrail). Empty = any http/https host is
+  # allowed. Entries are exact hosts ("youtube.com") or wildcard suffixes
+  # ("*.youtube.com" matches youtube.com and any subdomain).
+  allowed_hosts: []
+
+# ---------------------------------------------------------------------------
 # Prometheus metrics
 # ---------------------------------------------------------------------------
 metrics:

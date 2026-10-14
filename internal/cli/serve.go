@@ -24,21 +24,23 @@ import (
 // newServeCmd returns the serve subcommand.
 func newServeCmd() *cobra.Command {
 	var (
-		host         string
-		port         int
-		apiKey       string
-		verbose      bool
-		modelName    string
-		whisperBin   string
-		whisperModel string
-		remoteURL    string
-		whisperHost  string
-		whisperPort  int
-		device       int
-		threads      int
-		language     string
-		noFlashAttn  bool
-		noMetrics    bool
+		host          string
+		port          int
+		apiKey        string
+		verbose       bool
+		modelName     string
+		whisperBin    string
+		whisperModel  string
+		remoteURL     string
+		whisperHost   string
+		whisperPort   int
+		device        int
+		threads       int
+		language      string
+		noFlashAttn   bool
+		noMetrics     bool
+		downloaderBin string
+		noDownloader  bool
 	)
 
 	cmd := &cobra.Command{
@@ -97,6 +99,12 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			if noMetrics {
 				config.SetFlag("metrics.enabled", "false")
 			}
+			if f.Changed("downloader-bin") {
+				config.SetFlag("download.bin", downloaderBin)
+			}
+			if noDownloader {
+				config.SetFlag("download.enabled", "false")
+			}
 
 			cfgPath, err := f.GetString("config")
 			if err != nil {
@@ -140,6 +148,13 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			if _, err := exec.LookPath(cfg.Audio.FfmpegBin); err != nil {
 				log.Warn("ffmpeg not found; video uploads (mp4, mov, mkv, ...) will fail until it is installed",
 					"bin", cfg.Audio.FfmpegBin)
+			}
+			// yt-dlp is only needed for URL ingestion; warn early if absent.
+			if cfg.Download.Enabled {
+				if _, err := exec.LookPath(cfg.Download.Bin); err != nil {
+					log.Warn("yt-dlp not found; URL ingestion (JSON 'url' requests) will fail until it is installed",
+						"bin", cfg.Download.Bin)
+				}
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -246,6 +261,8 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 	fs.StringVar(&language, "language", "", "default inference language (whisper.language)")
 	fs.BoolVar(&noFlashAttn, "no-flash-attn", false, "disable flash attention (whisper.flash_attn=false)")
 	fs.BoolVar(&noMetrics, "no-metrics", false, "disable Prometheus metrics and the /metrics endpoint (metrics.enabled=false)")
+	fs.StringVar(&downloaderBin, "downloader-bin", "", "path to the yt-dlp binary for URL ingestion (download.bin)")
+	fs.BoolVar(&noDownloader, "no-downloader", false, "disable URL ingestion via yt-dlp (download.enabled=false)")
 
 	return cmd
 }

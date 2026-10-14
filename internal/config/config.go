@@ -19,11 +19,12 @@ import (
 
 // Config is the root whisper-oai configuration.
 type Config struct {
-	Server  ServerConfig  `mapstructure:"server"`
-	Whisper WhisperConfig `mapstructure:"whisper"`
-	Audio   AudioConfig   `mapstructure:"audio"`
-	Metrics MetricsConfig `mapstructure:"metrics"`
-	Log     LogConfig     `mapstructure:"log"`
+	Server   ServerConfig   `mapstructure:"server"`
+	Whisper  WhisperConfig  `mapstructure:"whisper"`
+	Audio    AudioConfig    `mapstructure:"audio"`
+	Download DownloadConfig `mapstructure:"download"`
+	Metrics  MetricsConfig  `mapstructure:"metrics"`
+	Log      LogConfig      `mapstructure:"log"`
 }
 
 // ServerConfig configures the public OpenAI-compatible HTTP server.
@@ -53,6 +54,17 @@ type AudioConfig struct {
 	FfmpegBin   string `mapstructure:"ffmpeg_bin"`    // default "ffmpeg"
 	TempDir     string `mapstructure:"temp_dir"`      // default "" (os.TempDir)
 	MaxUploadMB int    `mapstructure:"max_upload_mb"` // default 2048
+}
+
+// DownloadConfig configures URL ingestion: JSON requests with a "url" field
+// are downloaded via yt-dlp before transcription.
+type DownloadConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`       // default true
+	Bin          string        `mapstructure:"bin"`           // default "yt-dlp"
+	Timeout      time.Duration `mapstructure:"timeout"`       // default 10m
+	Format       string        `mapstructure:"format"`        // default "bv*+ba/b"
+	ExtraArgs    []string      `mapstructure:"extra_args"`    // default nil
+	AllowedHosts []string      `mapstructure:"allowed_hosts"` // default nil (all hosts allowed)
 }
 
 // MetricsConfig configures Prometheus metrics.
@@ -133,6 +145,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audio.ffmpeg_bin", "ffmpeg")
 	v.SetDefault("audio.temp_dir", "")
 	v.SetDefault("audio.max_upload_mb", 2048)
+	v.SetDefault("download.enabled", true)
+	v.SetDefault("download.bin", "yt-dlp")
+	v.SetDefault("download.timeout", "10m")
+	v.SetDefault("download.format", "bv*+ba/b")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.health_interval", "15s")
 	v.SetDefault("log.level", "info")
@@ -179,6 +195,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Metrics.Enabled && c.Metrics.HealthInterval < time.Second {
 		problems = append(problems, fmt.Sprintf("metrics.health_interval must be >= 1s, got %s", c.Metrics.HealthInterval))
+	}
+	if c.Download.Enabled {
+		if c.Download.Bin == "" {
+			problems = append(problems, "download.bin must not be empty when download.enabled is true")
+		}
+		if c.Download.Timeout <= 0 {
+			problems = append(problems, fmt.Sprintf("download.timeout must be > 0, got %s", c.Download.Timeout))
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))

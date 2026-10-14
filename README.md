@@ -46,6 +46,10 @@ sole consumer of the backend port.
   (not memory) and their audio track is stripped with **ffmpeg** into a
   16 kHz mono WAV before inference. Plain audio (wav/mp3/ogg/flac/opus)
   bypasses ffmpeg entirely.
+- **Transcribe from a URL** — send a JSON body with a `url` field (YouTube,
+  Vimeo, Facebook, Twitch, direct media links, ...) and whisper-oai downloads
+  the media with **yt-dlp**, then runs it through the same pipeline as an
+  upload. Optional host allowlist as an SSRF guardrail.
 - **Cobra/Viper CLI + config** — flags, env vars, and a YAML config file with
   clean precedence: `flag > env (WHISPER_OAI_*) > file > default`.
 - **Optional auth** — set `server.api_key` and every request needs
@@ -60,7 +64,7 @@ sole consumer of the backend port.
 
 | Method | Path                     | Notes                                            |
 |--------|--------------------------|--------------------------------------------------|
-| POST   | `/v1/audio/transcriptions` | multipart: `file`, `model`, `language`, `prompt`, `temperature`, `response_format` |
+| POST   | `/v1/audio/transcriptions` | multipart: `file`, `model`, `language`, `prompt`, `temperature`, `response_format` — **or** JSON: `{"url": "https://..."}` + the same optional fields |
 | POST   | `/v1/audio/translations`   | same as above (forces translation)               |
 | GET    | `/v1/models`               | lists the configured model                       |
 | GET    | `/v1/models/{model}`       | 404 unless it matches `server.model_name`        |
@@ -103,7 +107,18 @@ sudo apt-get install ffmpeg
 brew install ffmpeg
 ```
 
-### 4. Build whisper-oai
+### 4. Install yt-dlp (URL ingestion only)
+
+```sh
+# Debian/Ubuntu
+sudo apt-get install yt-dlp
+# macOS
+brew install yt-dlp
+# anywhere (pipX)
+pipx install yt-dlp
+```
+
+### 5. Build whisper-oai
 
 ```sh
 git clone git@github.com:tekmanic/whisper-oai.git
@@ -150,6 +165,11 @@ curl http://localhost:8000/v1/audio/transcriptions \
 curl http://localhost:8000/v1/audio/transcriptions \
   -F file=@presentation.mp4 \
   -F model=whisper-1
+
+# Transcribe from a URL (YouTube, Vimeo, Facebook, ...) — downloaded via yt-dlp
+curl http://localhost:8000/v1/audio/transcriptions \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "model": "whisper-1"}'
 
 # Translate to English
 curl http://localhost:8000/v1/audio/translations \
@@ -223,6 +243,12 @@ Precedence: **flag > env > file > default**.
 | `audio.ffmpeg_bin` | `ffmpeg` | ffmpeg binary (video uploads only) |
 | `audio.temp_dir` | `""` | Spool/extract dir (empty = `os.TempDir()`) |
 | `audio.max_upload_mb` | `2048` | Max upload size in MB (0 = unlimited; 413 when exceeded) |
+| `download.enabled` | `true` | Enable URL ingestion (JSON `url` requests) |
+| `download.bin` | `yt-dlp` | yt-dlp binary |
+| `download.timeout` | `10m` | Per-download timeout |
+| `download.format` | `bv*+ba/b` | yt-dlp format selector (`ba/b` = audio only) |
+| `download.extra_args` | `[]` | Extra args appended verbatim (cookies, credentials, ...) |
+| `download.allowed_hosts` | `[]` | Host allowlist; empty = any http/https host (SSRF guardrail) |
 | `metrics.enabled` | `true` | Enable the `/metrics` Prometheus endpoint |
 | `metrics.health_interval` | `15s` | How often to poll whisper-server health for the up/running gauges |
 | `log.level` | `info` | `debug` \| `info` \| `warn` \| `error` |
@@ -242,6 +268,34 @@ any `video/*` content type), whisper-oai:
 
 Plain audio uploads skip ffmpeg entirely. If ffmpeg is missing, `serve` logs a
 warning at startup and video uploads return a 502 (audio uploads still work).
+
+## Transcribe from a URL
+
+Instead of uploading a file, send a JSON body with a `url` field to
+`POST /v1/audio/transcriptions` (or `/v1/audio/translations`). whisper-oai
+downloads the media with **yt-dlp** — which supports YouTube, Vimeo,
+Facebook, Twitch, TikTok, and thousands of other hosts — and then processes
+it exactly like an upload: video containers are stripped to a 16 kHz mono WAV
+with ffmpeg first, then forwarded to whisper-server.
+
+```sh
+curl http://localhost:8000/v1/audio/transcriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "model": "whisper-1",
+    "response_format": "verbose_json",
+    "language": "en"
+  }'
+```
+
+All the usual fields (`model`, `response_format`, `language`, `prompt`,
+`temperature`) work in the JSON body. Only `http`/`https` URLs are accepted
+(400 otherwise), downloads are bounded by `download.timeout`, and
+`download.allowed_hosts` can restrict which hosts may be fetched. If yt-dlp
+is missing or the download fails, the request returns a 502 with the yt-dlp
+error in the message. Disable the feature entirely with
+`download.enabled: false` or `--no-downloader`.
 
 ## Metrics
 
@@ -271,6 +325,10 @@ included.
 | `whisper_oai_ffmpeg_extractions_total` | counter | `status` | ffmpeg audio extractions by outcome |
 | `whisper_oai_ffmpeg_extraction_duration_seconds` | histogram | — | ffmpeg extraction duration |
 | `whisper_oai_ffmpeg_extractions_in_flight` | gauge | — | ffmpeg extractions currently running |
+| `whisper_oai_downloads_total` | counter | `status` | yt-dlp media downloads by outcome |
+| `whisper_oai_download_duration_seconds` | histogram | — | yt-dlp download duration |
+| `whisper_oai_download_bytes` | histogram | — | Downloaded media size |
+| `whisper_oai_downloads_in_flight` | gauge | — | Downloads currently running |
 
 The `path` label uses the mux route pattern (e.g. `POST /v1/audio/transcriptions`)
 rather than the raw URL, so label cardinality stays bounded.
@@ -306,6 +364,10 @@ scrape_configs:
   `server.api_key` and put TLS in front (reverse proxy).
 - **Uploads are size-capped** by `audio.max_upload_mb` (HTTP 413 when
   exceeded) and spooled to a temp dir you control via `audio.temp_dir`.
+- **URL ingestion fetches remote media.** Only `http`/`https` URLs are
+  accepted, and `download.allowed_hosts` can restrict which hosts yt-dlp may
+  fetch (empty = any host). Set it to a short list if the service is exposed
+  beyond your network. Downloads are bounded by `download.timeout`.
 
 ## Development
 
@@ -319,7 +381,8 @@ make run        # build + serve with the default config
 ```
 
 Tests use `net/http/httptest` fakes for whisper-server and a scripted fake
-ffmpeg, so the full suite runs on a plain CI box.
+ffmpeg, plus a scripted fake yt-dlp (a POSIX `sh` stub), so the full suite
+runs on a plain CI box.
 
 ## Project layout
 
@@ -330,6 +393,7 @@ internal/config/        Viper config loading + validation
 internal/whisper/       whisper-server process manager + HTTP client
 internal/server/        OpenAI-compatible HTTP server + handlers
 internal/audio/         upload spooling + ffmpeg audio extraction
+internal/download/      yt-dlp URL ingestion (download + host allowlist)
 internal/metrics/       Prometheus collectors + /metrics handler
 config/                 example config
 docs/                   design + research notes

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tekmanic/whisper-oai/internal/config"
+	"github.com/tekmanic/whisper-oai/internal/download"
 	"github.com/tekmanic/whisper-oai/internal/metrics"
 	"github.com/tekmanic/whisper-oai/internal/whisper"
 )
@@ -25,16 +26,30 @@ type Server struct {
 	http    *http.Server
 	log     *slog.Logger
 	metrics *metrics.Metrics
+	dl      *download.Downloader
 }
 
-// New wires the HTTP server. cli is built from mgr.URL().
+// New wires the HTTP server. cli is built from mgr.URL(). When
+// cfg.Download.Enabled, a yt-dlp Downloader is built so JSON "url" requests
+// can be served; otherwise s.dl stays nil and URL ingestion returns 400.
 func New(cfg *config.Config, mgr *whisper.Manager, log *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		cfg: cfg,
 		mgr: mgr,
 		cli: whisper.NewClient(mgr.URL()),
 		log: log,
 	}
+	if cfg.Download.Enabled {
+		s.dl = download.New(download.Options{
+			Bin:          cfg.Download.Bin,
+			Timeout:      cfg.Download.Timeout,
+			Format:       cfg.Download.Format,
+			ExtraArgs:    cfg.Download.ExtraArgs,
+			AllowedHosts: cfg.Download.AllowedHosts,
+			TempDir:      cfg.Audio.TempDir,
+		}, log)
+	}
+	return s
 }
 
 // SetMetrics attaches the Prometheus metrics collector. When nil (the

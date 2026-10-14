@@ -54,6 +54,8 @@ func TestNewRegistersAllMetrics(t *testing.T) {
 	m.ObserveTranscribedSeconds("transcribe", 1.0)
 	m.ObserveUploadBytes("audio", 10)
 	m.ObserveFFmpegExtraction("success", time.Millisecond)
+	m.ObserveDownload("success", time.Millisecond)
+	m.ObserveDownloadBytes(10)
 
 	mfs, err := m.registry.Gather()
 	if err != nil {
@@ -83,6 +85,11 @@ func TestNewRegistersAllMetrics(t *testing.T) {
 		"whisper_oai_ffmpeg_extractions_total",
 		"whisper_oai_ffmpeg_extraction_duration_seconds",
 		"whisper_oai_ffmpeg_extractions_in_flight",
+		// URL ingestion (yt-dlp)
+		"whisper_oai_downloads_total",
+		"whisper_oai_download_duration_seconds",
+		"whisper_oai_download_bytes",
+		"whisper_oai_downloads_in_flight",
 		// Standard collectors
 		"go_goroutines",
 		"process_cpu_seconds_total",
@@ -189,6 +196,31 @@ func TestInferenceAndFFmpegObservation(t *testing.T) {
 	}
 }
 
+func TestDownloadObservation(t *testing.T) {
+	m := New()
+	m.IncDownloadInFlight()
+	if got := testutil.ToFloat64(m.downloadsInFlight); got != 1 {
+		t.Errorf("downloads_in_flight = %v, want 1", got)
+	}
+	m.DecDownloadInFlight()
+	m.ObserveDownload("success", 500*time.Millisecond)
+	m.ObserveDownload("error", 100*time.Millisecond)
+	if got := testutil.ToFloat64(m.downloadRequestsTotal.WithLabelValues("success")); got != 1 {
+		t.Errorf("downloads{success} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.downloadRequestsTotal.WithLabelValues("error")); got != 1 {
+		t.Errorf("downloads{error} = %v, want 1", got)
+	}
+	if got := histogramCount(t, m, "whisper_oai_download_duration_seconds", nil); got != 2 {
+		t.Errorf("download_duration count = %v, want 2", got)
+	}
+	m.ObserveDownloadBytes(1 << 20)
+	m.ObserveDownloadBytes(-1) // must be ignored
+	if got := histogramCount(t, m, "whisper_oai_download_bytes", nil); got != 1 {
+		t.Errorf("download_bytes count = %v, want 1", got)
+	}
+}
+
 func TestProcessGauges(t *testing.T) {
 	m := New()
 	m.SetWhisperServerUp(true)
@@ -224,6 +256,10 @@ func TestNilSafe(t *testing.T) {
 	m.IncFFmpegInFlight()
 	m.DecFFmpegInFlight()
 	m.ObserveFFmpegExtraction("success", time.Millisecond)
+	m.IncDownloadInFlight()
+	m.DecDownloadInFlight()
+	m.ObserveDownload("success", time.Millisecond)
+	m.ObserveDownloadBytes(10)
 }
 
 func TestHandlerServesPrometheus(t *testing.T) {

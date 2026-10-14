@@ -57,6 +57,12 @@ type Metrics struct {
 	ffmpegExtractionsTotal *prometheus.CounterVec
 	ffmpegDuration         prometheus.Histogram
 	ffmpegInFlight         prometheus.Gauge
+
+	// URL ingestion (yt-dlp) metrics.
+	downloadRequestsTotal *prometheus.CounterVec
+	downloadDuration      prometheus.Histogram
+	downloadBytes         prometheus.Histogram
+	downloadsInFlight     prometheus.Gauge
 }
 
 // New builds a Metrics with all collectors registered on a fresh registry
@@ -153,6 +159,29 @@ func New() *Metrics {
 			Name:      "ffmpeg_extractions_in_flight",
 			Help:      "Number of ffmpeg audio extractions currently running.",
 		}),
+
+		downloadRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "downloads_total",
+			Help:      "Total number of media downloads via yt-dlp, by outcome.",
+		}, []string{"status"}),
+		downloadDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "download_duration_seconds",
+			Help:      "Duration of media downloads via yt-dlp, in seconds.",
+			Buckets:   durationBuckets,
+		}),
+		downloadBytes: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "download_bytes",
+			Help:      "Size of downloaded media files in bytes.",
+			Buckets:   byteBuckets,
+		}),
+		downloadsInFlight: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "downloads_in_flight",
+			Help:      "Number of media downloads via yt-dlp currently running.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -171,6 +200,10 @@ func New() *Metrics {
 		m.ffmpegExtractionsTotal,
 		m.ffmpegDuration,
 		m.ffmpegInFlight,
+		m.downloadRequestsTotal,
+		m.downloadDuration,
+		m.downloadBytes,
+		m.downloadsInFlight,
 	)
 	return m
 }
@@ -313,4 +346,38 @@ func (m *Metrics) ObserveFFmpegExtraction(status string, duration time.Duration)
 	}
 	m.ffmpegExtractionsTotal.WithLabelValues(status).Inc()
 	m.ffmpegDuration.Observe(duration.Seconds())
+}
+
+// IncDownloadInFlight increments the in-flight yt-dlp download gauge.
+func (m *Metrics) IncDownloadInFlight() {
+	if m == nil {
+		return
+	}
+	m.downloadsInFlight.Inc()
+}
+
+// DecDownloadInFlight decrements the in-flight yt-dlp download gauge.
+func (m *Metrics) DecDownloadInFlight() {
+	if m == nil {
+		return
+	}
+	m.downloadsInFlight.Dec()
+}
+
+// ObserveDownload records one yt-dlp media download. status is "success" or
+// "error".
+func (m *Metrics) ObserveDownload(status string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.downloadRequestsTotal.WithLabelValues(status).Inc()
+	m.downloadDuration.Observe(duration.Seconds())
+}
+
+// ObserveDownloadBytes records the size of a downloaded media file.
+func (m *Metrics) ObserveDownloadBytes(n int64) {
+	if m == nil || n < 0 {
+		return
+	}
+	m.downloadBytes.Observe(float64(n))
 }

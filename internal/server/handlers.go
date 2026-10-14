@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tekmanic/whisper-oai/internal/audio"
+	"github.com/tekmanic/whisper-oai/internal/download"
 	"github.com/tekmanic/whisper-oai/internal/whisper"
 )
 
@@ -75,8 +77,31 @@ func (s *Server) handleTranslation(w http.ResponseWriter, r *http.Request) {
 	s.handleInfer(w, r, true)
 }
 
-// handleInfer parses the OpenAI multipart request, forwards it to
-// whisper-server, and writes the response in the requested format.
+// inferParams holds the per-request inference parameters, parsed from either
+// the multipart form or the JSON body.
+type inferParams struct {
+	model       string
+	format      string
+	language    string
+	prompt      string
+	temperature float64
+}
+
+// jsonInferRequest is the JSON body accepted on /v1/audio/transcriptions and
+// /v1/audio/translations for URL ingestion. All fields except url are
+// optional and mirror the multipart form fields.
+type jsonInferRequest struct {
+	URL            string  `json:"url"`
+	Model          string  `json:"model"`
+	ResponseFormat string  `json:"response_format"`
+	Language       string  `json:"language"`
+	Prompt         string  `json:"prompt"`
+	Temperature    float64 `json:"temperature"`
+}
+
+// handleInfer resolves the request's media (multipart upload or JSON url),
+// prepares it, forwards it to whisper-server, and writes the response in the
+// requested format.
 func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate bool) {
 	start := time.Now()
 	s.log.Debug("received inference request",
@@ -86,6 +111,144 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		"remote_addr", r.RemoteAddr,
 	)
 
+	// Resolve the media source to a local file: a multipart file upload
+	// (spooled to disk) or a JSON body with a "url" field (downloaded via
+	// yt-dlp). On failure the error response is already written.
+	srcPath, filename, contentType, params, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	defer os.Remove(srcPath)
+
+	if params.model != s.cfg.Server.ModelName {
+		s.log.Warn("request used invalid model", "got", params.model, "expected", s.cfg.Server.ModelName)
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Invalid value for 'model'. Expected %q.", s.cfg.Server.ModelName), "model")
+		return
+	}
+
+	if params.format == "" {
+		params.format = "json"
+	}
+	if !validFormats[params.format] {
+		s.log.Warn("request used invalid response format", "response_format", params.format)
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"Invalid value for 'response_format'. Expected one of: json, text, srt, verbose_json, vtt.",
+			"response_format")
+		return
+	}
+
+	// Video containers (mp4, mov, mkv, ...) cannot be decoded by
+	// whisper-server; strip the audio track with ffmpeg first.
+	var (
+		inferFile io.Reader
+		inferName = filename
+	)
+	isVideo := audio.IsVideo(filename, contentType)
+	if st, statErr := os.Stat(srcPath); statErr == nil {
+		if isVideo {
+			s.metrics.ObserveUploadBytes("video", st.Size())
+		} else {
+			s.metrics.ObserveUploadBytes("audio", st.Size())
+		}
+	}
+	// inferStart marks the beginning of the inference work (ffmpeg extraction
+	// for video, then the upstream call). inference_duration_seconds spans this
+	// whole window; upstream_inference_duration_seconds covers only the
+	// whisper-server call itself.
+	inferStart := time.Now()
+	if isVideo {
+		s.log.Info("video media detected; extracting audio track", "file", filename)
+		s.metrics.IncFFmpegInFlight()
+		extractStart := time.Now()
+		wavPath, err := audio.Extract(r.Context(), srcPath, s.cfg.Audio.FfmpegBin, s.cfg.Audio.TempDir, s.log)
+		if err != nil {
+			s.metrics.DecFFmpegInFlight()
+			s.metrics.ObserveFFmpegExtraction("error", time.Since(extractStart))
+			s.log.Error("audio extraction failed", "error", err)
+			writeError(w, http.StatusBadGateway, "server_error",
+				fmt.Sprintf("audio extraction from video failed: %v", err), "")
+			return
+		}
+		s.metrics.DecFFmpegInFlight()
+		s.metrics.ObserveFFmpegExtraction("success", time.Since(extractStart))
+		defer os.Remove(wavPath)
+		wf, err := os.Open(wavPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "failed to open extracted audio", "")
+			return
+		}
+		defer wf.Close()
+		inferFile, inferName = wf, filepath.Base(wavPath)
+	} else {
+		sf, err := os.Open(srcPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "failed to open media file", "")
+			return
+		}
+		defer sf.Close()
+		inferFile = sf
+	}
+
+	s.log.Info("forwarding inference request",
+		"filename", inferName,
+		"translate", translate,
+		"response_format", params.format,
+		"language", params.language,
+		"temperature", params.temperature,
+	)
+
+	req := whisper.InferRequest{
+		File:           inferFile,
+		Filename:       inferName,
+		Language:       params.language,
+		Prompt:         params.prompt,
+		Temperature:    params.temperature,
+		Translate:      translate,
+		ResponseFormat: params.format,
+	}
+
+	task := "transcribe"
+	if translate {
+		task = "translate"
+	}
+	upstreamStart := time.Now()
+	resp, err := s.cli.Infer(r.Context(), req)
+	upstreamDur := time.Since(upstreamStart)
+	if err != nil {
+		s.metrics.ObserveInference(task, "error", time.Since(inferStart))
+		s.log.Error("inference failed", "error", err)
+		writeError(w, http.StatusBadGateway, "server_error", fmt.Sprintf("upstream inference failed: %v", err), "")
+		return
+	}
+	s.metrics.ObserveInference(task, "success", time.Since(inferStart))
+	s.metrics.ObserveUpstreamInference(upstreamDur)
+	s.metrics.ObserveTranscribedSeconds(task, resp.Duration)
+	s.log.Info("inference completed",
+		"filename", inferName,
+		"response_format", params.format,
+		"text_len", len(resp.Text),
+		"raw_len", len(resp.RawBody),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	s.writeInferResponse(w, params.format, translate, resp)
+}
+
+// resolveSource resolves the request's media source to a local file path plus
+// the per-request inference parameters. It accepts either a multipart form
+// (OpenAI-style file upload) or an application/json body with a "url" field
+// (downloaded via yt-dlp). On failure it writes the error response and
+// returns ok=false.
+func (s *Server) resolveSource(w http.ResponseWriter, r *http.Request) (srcPath, filename, contentType string, p inferParams, ok bool) {
+	if ct := r.Header.Get("Content-Type"); strings.HasPrefix(strings.ToLower(ct), "application/json") {
+		return s.resolveURLSource(w, r)
+	}
+	return s.resolveMultipartSource(w, r)
+}
+
+// resolveMultipartSource spools an OpenAI-style multipart file upload to disk
+// and parses the form fields.
+func (s *Server) resolveMultipartSource(w http.ResponseWriter, r *http.Request) (srcPath, filename, contentType string, p inferParams, ok bool) {
 	// Enforce the configured upload size limit (0 = unlimited).
 	if s.cfg.Audio.MaxUploadMB > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, int64(s.cfg.Audio.MaxUploadMB)<<20)
@@ -115,83 +278,10 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 
 	// Spool the upload to a temp file so large uploads stream to disk (not
 	// memory) and video files can be addressed by path for ffmpeg.
-	srcPath, err := audio.Spool(file, header.Filename, s.cfg.Audio.TempDir)
+	srcPath, err = audio.Spool(file, header.Filename, s.cfg.Audio.TempDir)
 	if err != nil {
 		s.log.Error("failed to spool upload", "error", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "failed to store the uploaded file", "")
-		return
-	}
-	defer os.Remove(srcPath)
-
-	// Video containers (mp4, mov, mkv, ...) cannot be decoded by
-	// whisper-server; strip the audio track with ffmpeg first.
-	var (
-		inferFile io.Reader
-		inferName = header.Filename
-	)
-	isVideo := audio.IsVideo(header.Filename, header.Header.Get("Content-Type"))
-	if st, statErr := os.Stat(srcPath); statErr == nil {
-		if isVideo {
-			s.metrics.ObserveUploadBytes("video", st.Size())
-		} else {
-			s.metrics.ObserveUploadBytes("audio", st.Size())
-		}
-	}
-	// inferStart marks the beginning of the inference work (ffmpeg extraction
-	// for video, then the upstream call). inference_duration_seconds spans this
-	// whole window; upstream_inference_duration_seconds covers only the
-	// whisper-server call itself.
-	inferStart := time.Now()
-	if isVideo {
-		s.log.Info("video upload detected; extracting audio track", "file", header.Filename)
-		s.metrics.IncFFmpegInFlight()
-		extractStart := time.Now()
-		wavPath, err := audio.Extract(r.Context(), srcPath, s.cfg.Audio.FfmpegBin, s.cfg.Audio.TempDir, s.log)
-		if err != nil {
-			s.metrics.DecFFmpegInFlight()
-			s.metrics.ObserveFFmpegExtraction("error", time.Since(extractStart))
-			s.log.Error("audio extraction failed", "error", err)
-			writeError(w, http.StatusBadGateway, "server_error",
-				fmt.Sprintf("audio extraction from video failed: %v", err), "")
-			return
-		}
-		s.metrics.DecFFmpegInFlight()
-		s.metrics.ObserveFFmpegExtraction("success", time.Since(extractStart))
-		defer os.Remove(wavPath)
-		wf, err := os.Open(wavPath)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "server_error", "failed to open extracted audio", "")
-			return
-		}
-		defer wf.Close()
-		inferFile, inferName = wf, filepath.Base(wavPath)
-	} else {
-		sf, err := os.Open(srcPath)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "server_error", "failed to open uploaded file", "")
-			return
-		}
-		defer sf.Close()
-		inferFile = sf
-	}
-
-	model := r.FormValue("model")
-	if model != s.cfg.Server.ModelName {
-		s.log.Warn("request used invalid model", "got", model, "expected", s.cfg.Server.ModelName)
-		writeError(w, http.StatusBadRequest, "invalid_request_error",
-			fmt.Sprintf("Invalid value for 'model'. Expected %q.", s.cfg.Server.ModelName), "model")
-		return
-	}
-
-	format := r.FormValue("response_format")
-	if format == "" {
-		format = "json"
-	}
-	if !validFormats[format] {
-		s.log.Warn("request used invalid response format", "response_format", format)
-		writeError(w, http.StatusBadRequest, "invalid_request_error",
-			"Invalid value for 'response_format'. Expected one of: json, text, srt, verbose_json, vtt.",
-			"response_format")
 		return
 	}
 
@@ -205,48 +295,77 @@ func (s *Server) handleInfer(w http.ResponseWriter, r *http.Request, translate b
 		}
 	}
 
-	s.log.Info("forwarding inference request",
-		"filename", inferName,
-		"translate", translate,
-		"response_format", format,
-		"language", r.FormValue("language"),
-		"temperature", temperature,
-	)
-
-	req := whisper.InferRequest{
-		File:           inferFile,
-		Filename:       inferName,
-		Language:       r.FormValue("language"),
-		Prompt:         r.FormValue("prompt"),
-		Temperature:    temperature,
-		Translate:      translate,
-		ResponseFormat: format,
+	p = inferParams{
+		model:       r.FormValue("model"),
+		format:      r.FormValue("response_format"),
+		language:    r.FormValue("language"),
+		prompt:      r.FormValue("prompt"),
+		temperature: temperature,
 	}
+	return srcPath, header.Filename, header.Header.Get("Content-Type"), p, true
+}
 
-	task := "transcribe"
-	if translate {
-		task = "translate"
-	}
-	upstreamStart := time.Now()
-	resp, err := s.cli.Infer(r.Context(), req)
-	upstreamDur := time.Since(upstreamStart)
+// resolveURLSource handles an application/json body: it validates the "url"
+// field, downloads the media via yt-dlp, and returns the local path.
+func (s *Server) resolveURLSource(w http.ResponseWriter, r *http.Request) (srcPath, filename, contentType string, p inferParams, ok bool) {
+	var jr jsonInferRequest
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		s.metrics.ObserveInference(task, "error", time.Since(inferStart))
-		s.log.Error("inference failed", "error", err)
-		writeError(w, http.StatusBadGateway, "server_error", fmt.Sprintf("upstream inference failed: %v", err), "")
+		s.log.Warn("failed to read JSON body", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body", "")
 		return
 	}
-	s.metrics.ObserveInference(task, "success", time.Since(inferStart))
-	s.metrics.ObserveUpstreamInference(upstreamDur)
-	s.metrics.ObserveTranscribedSeconds(task, resp.Duration)
-	s.log.Info("inference completed",
-		"filename", inferName,
-		"response_format", format,
-		"text_len", len(resp.Text),
-		"raw_len", len(resp.RawBody),
-		"duration_ms", time.Since(start).Milliseconds(),
-	)
-	s.writeInferResponse(w, format, translate, resp)
+	if err := json.Unmarshal(body, &jr); err != nil {
+		s.log.Warn("request body is not valid JSON", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"request body must be valid JSON with a 'url' field", "")
+		return
+	}
+	if strings.TrimSpace(jr.URL) == "" {
+		s.log.Warn("JSON request missing url field")
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "no 'url' field in the request", "url")
+		return
+	}
+	if s.dl == nil {
+		s.log.Warn("URL ingestion requested but disabled")
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"URL ingestion is disabled (set download.enabled=true)", "url")
+		return
+	}
+
+	s.log.Info("downloading media from URL", "url", jr.URL)
+	s.metrics.IncDownloadInFlight()
+	dlStart := time.Now()
+	path, filename, err := s.dl.Download(r.Context(), jr.URL)
+	if err != nil {
+		s.metrics.DecDownloadInFlight()
+		s.metrics.ObserveDownload("error", time.Since(dlStart))
+		s.log.Error("media download failed", "url", jr.URL, "error", err)
+		if errors.Is(err, download.ErrInvalidURL) || errors.Is(err, download.ErrHostNotAllowed) {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "url")
+			return
+		}
+		writeError(w, http.StatusBadGateway, "server_error",
+			fmt.Sprintf("failed to download media: %v", err), "")
+		return
+	}
+	s.metrics.DecDownloadInFlight()
+	s.metrics.ObserveDownload("success", time.Since(dlStart))
+	if st, statErr := os.Stat(path); statErr == nil {
+		s.metrics.ObserveDownloadBytes(st.Size())
+		s.log.Info("media download complete", "url", jr.URL, "file", filename, "bytes", st.Size())
+	} else {
+		s.log.Info("media download complete", "url", jr.URL, "file", filename)
+	}
+
+	p = inferParams{
+		model:       jr.Model,
+		format:      jr.ResponseFormat,
+		language:    jr.Language,
+		prompt:      jr.Prompt,
+		temperature: jr.Temperature,
+	}
+	return path, filename, "", p, true
 }
 
 // writeInferResponse maps a whisper.InferResponse to the OpenAI shape for the
