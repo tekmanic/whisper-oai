@@ -11,7 +11,8 @@ RUN CGO_ENABLED=0 go build -o /out/whisper-oai ./cmd/whisper-oai
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg python3 py3-pip \
+ && pip3 install --no-cache-dir yt-dlp
 
 COPY --from=builder /out/whisper-oai /usr/local/bin/whisper-oai
 

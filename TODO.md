@@ -147,6 +147,47 @@ Reference for the OpenAI API surface we mirror:
       (use `github.pem` key, see TOOLS.md)
 - [x] open PR (optional)
 
+## 9. URL ingestion via yt-dlp (done — branch `feat/url-ingestion`)
+- [x] `internal/download/` — stdlib-only package (`download.go`, no config
+      dependency — takes an `Options` struct):
+  - `Downloader` struct, `New(opts Options, log *slog.Logger) *Downloader`
+  - `Download(ctx, url) (path, filename, error)` — runs yt-dlp:
+    `--no-playlist --no-warnings -f <format> -o <tmp>/whisper-oai-dl-<16hex>.%(ext)s
+    --print after_move:filepath <extra_args...> <url>`; parses the output
+    path from `--print after_move:filepath` (glob fallback); bounded by
+    `download.timeout` (context); error messages carry the tail of yt-dlp
+    stderr (truncated to 2 KB)
+  - `ErrInvalidURL` (non-http/https or unparseable) / `ErrHostNotAllowed`
+    (host fails the allowlist) — both map to HTTP 400 in the handler
+  - `hostAllowed(host, allowed []string) bool` — exact host or `*.suffix`
+    wildcard match (case-insensitive; `*.example.com` matches the apex and
+    subdomains, not `notexample.com`); empty list = allow all
+- [x] `download_test.go` — table-driven host allowlist; Download against a
+      scripted fake yt-dlp (POSIX `sh` stub); timeout, missing binary,
+      non-http URL, disallowed host, `--no-playlist`/`-f`/`extra_args` argv
+      assertions
+- [x] `internal/config/` — `DownloadConfig{Enabled, Bin, Timeout, Format,
+      ExtraArgs, AllowedHosts}` + defaults (enabled, `yt-dlp`, 10m,
+      `bv*+ba/b`) + validation (bin non-empty, timeout > 0 when enabled)
+- [x] `internal/server/` — `handleInfer` split: multipart path unchanged;
+      JSON body with `url` → `resolveURLSource` → download → same pipeline
+      (IsVideo → ffmpeg → whisper-server). Download failure → 502 with the
+      yt-dlp error; disabled → 400
+- [x] `internal/metrics/` — `whisper_oai_downloads_total{status}`,
+      `whisper_oai_download_duration_seconds`, `whisper_oai_download_bytes`,
+      `whisper_oai_downloads_in_flight`
+- [x] `internal/cli/serve.go` — `--downloader-bin`, `--no-downloader` flags;
+      startup warning when yt-dlp is missing (URL ingestion would fail)
+- [x] `Dockerfile` — `yt-dlp` installed alongside ffmpeg
+- [x] `internal/server/url_test.go` — end-to-end URL transcription/translation
+      against a fake whisper-server + fake yt-dlp (audio + video + verbose
+      JSON + wrong-model 400 + disabled 400 + non-http 400)
+- [x] docs — README (features, endpoints, requirements, try-it, config table,
+      "Transcribe from a URL" section, metrics table, security notes),
+      `config/whisper-oai.example.yaml` (download section)
+- [ ] manual smoke (needs a host with yt-dlp + whisper-server): POST a JSON
+      `url` request with a real YouTube link and a direct .mp3 link
+
 ---
 
 ## Key design decisions (locked)
@@ -165,6 +206,13 @@ Reference for the OpenAI API surface we mirror:
    files, strips the audio track with ffmpeg into a 16 kHz mono WAV before
    forwarding. ffmpeg is a runtime dependency for video uploads only; plain
    audio (wav/mp3/ogg/flac/opus) needs no ffmpeg.
+7. **URL ingestion via yt-dlp.** `POST /v1/audio/transcriptions|translations`
+   also accepts a JSON body with a `url` field. The media is downloaded with
+   yt-dlp (`--no-playlist --restrict-filenames`, format `bv*+ba/b` by
+   default) into a temp file, then flows through the exact same pipeline as
+   an upload (IsVideo → ffmpeg → whisper-server). Only http/https URLs are
+   accepted; `download.allowed_hosts` is an optional SSRF guardrail;
+   `download.enabled: false` / `--no-downloader` disables the feature.
 
 ## Risks / open questions
 - whisper-server flag names vary by version (`-dev` vs `--device`, `-t` vs
@@ -176,3 +224,8 @@ Reference for the OpenAI API surface we mirror:
   `whisper.device` / `extra_args` accordingly.
 - ffmpeg must be installed for video uploads; `serve` warns at startup if it
   is not on PATH (or at `audio.ffmpeg_bin`).
+- yt-dlp must be installed for URL ingestion; `serve` warns at startup if it
+  is not on PATH (or at `download.bin`). yt-dlp is a fast-moving project —
+  pin the version in production if reproducibility matters. Its stdout
+  parsing (final line = output path) is stable across versions but is the
+  most likely thing to break on a major release.

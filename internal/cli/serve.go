@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tekmanic/whisper-oai/internal/config"
+	"github.com/tekmanic/whisper-oai/internal/metrics"
 	"github.com/tekmanic/whisper-oai/internal/server"
 	"github.com/tekmanic/whisper-oai/internal/whisper"
 )
@@ -23,20 +24,23 @@ import (
 // newServeCmd returns the serve subcommand.
 func newServeCmd() *cobra.Command {
 	var (
-		host         string
-		port         int
-		apiKey       string
-		verbose      bool
-		modelName    string
-		whisperBin   string
-		whisperModel string
-		remoteURL    string
-		whisperHost  string
-		whisperPort  int
-		device       int
-		threads      int
-		language     string
-		noFlashAttn  bool
+		host          string
+		port          int
+		apiKey        string
+		verbose       bool
+		modelName     string
+		whisperBin    string
+		whisperModel  string
+		remoteURL     string
+		whisperHost   string
+		whisperPort   int
+		device        int
+		threads       int
+		language      string
+		noFlashAttn   bool
+		noMetrics     bool
+		downloaderBin string
+		noDownloader  bool
 	)
 
 	cmd := &cobra.Command{
@@ -92,6 +96,15 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			if f.Changed("no-flash-attn") {
 				config.SetFlag("whisper.flash_attn", "false")
 			}
+			if noMetrics {
+				config.SetFlag("metrics.enabled", "false")
+			}
+			if f.Changed("downloader-bin") {
+				config.SetFlag("download.bin", downloaderBin)
+			}
+			if noDownloader {
+				config.SetFlag("download.enabled", "false")
+			}
 
 			cfgPath, err := f.GetString("config")
 			if err != nil {
@@ -136,6 +149,13 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 				log.Warn("ffmpeg not found; video uploads (mp4, mov, mkv, ...) will fail until it is installed",
 					"bin", cfg.Audio.FfmpegBin)
 			}
+			// yt-dlp is only needed for URL ingestion; warn early if absent.
+			if cfg.Download.Enabled {
+				if _, err := exec.LookPath(cfg.Download.Bin); err != nil {
+					log.Warn("yt-dlp not found; URL ingestion (JSON 'url' requests) will fail until it is installed",
+						"bin", cfg.Download.Bin)
+				}
+			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -152,7 +172,47 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 			}
 			log.Info("whisper-server ready", "url", mgr.URL())
 
+			// Wire Prometheus metrics (nil when disabled).
+			var m *metrics.Metrics
+			if cfg.Metrics.Enabled {
+				m = metrics.New()
+				mgr.SetMetrics(m)
+				m.SetWhisperServerUp(true)
+				if cfg.Whisper.RemoteURL == "" {
+					m.SetWhisperProcessRunning(true)
+				}
+				log.Info("prometheus metrics enabled", "endpoint", "GET /metrics", "health_interval", cfg.Metrics.HealthInterval.String())
+			}
+
+			// Background poller: refresh the whisper-server health and
+			// process-liveness gauges on an interval.
+			if m != nil {
+				interval := cfg.Metrics.HealthInterval
+				if interval < time.Second {
+					interval = 15 * time.Second
+				}
+				go func() {
+					ticker := time.NewTicker(interval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							hctx, hcancel := context.WithTimeout(ctx, 5*time.Second)
+							up := mgr.Health(hctx) == nil
+							hcancel()
+							m.SetWhisperServerUp(up)
+							if cfg.Whisper.RemoteURL == "" {
+								m.SetWhisperProcessRunning(mgr.Running())
+							}
+						}
+					}
+				}()
+			}
+
 			srv := server.New(cfg, mgr, log)
+			srv.SetMetrics(m)
 			log.Info("serving OpenAI-compatible API", "addr", cfg.ListenAddr())
 
 			errCh := make(chan error, 1)
@@ -200,6 +260,9 @@ shuts down gracefully on SIGINT/SIGTERM.`,
 	fs.IntVar(&threads, "threads", 0, "CPU threads for whisper-server, 0 = auto (whisper.threads)")
 	fs.StringVar(&language, "language", "", "default inference language (whisper.language)")
 	fs.BoolVar(&noFlashAttn, "no-flash-attn", false, "disable flash attention (whisper.flash_attn=false)")
+	fs.BoolVar(&noMetrics, "no-metrics", false, "disable Prometheus metrics and the /metrics endpoint (metrics.enabled=false)")
+	fs.StringVar(&downloaderBin, "downloader-bin", "", "path to the yt-dlp binary for URL ingestion (download.bin)")
+	fs.BoolVar(&noDownloader, "no-downloader", false, "disable URL ingestion via yt-dlp (download.enabled=false)")
 
 	return cmd
 }

@@ -33,6 +33,19 @@ printf 'RIFF-fake-wav' > "$last"
 	return script
 }
 
+// writeFailingFFmpeg creates a fake ffmpeg shell script that always exits 1
+// with an error on stderr. Returns the script path.
+func writeFailingFFmpeg(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ffmpeg")
+	body := "#!/bin/sh\necho 'ffmpeg: Invalid data found when processing input' >&2\nexit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write failing ffmpeg: %v", err)
+	}
+	return script
+}
+
 // TestVideoUpload verifies that a video upload (mp4) is spooled, its audio
 // track "extracted" via (fake) ffmpeg, and the resulting .wav is what gets
 // forwarded to whisper-server.

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // clearFlags resets the package-level flag overrides between tests.
@@ -52,6 +53,18 @@ func TestLoadDefaults(t *testing.T) {
 			FfmpegBin:   "ffmpeg",
 			TempDir:     "",
 			MaxUploadMB: 2048,
+		},
+		Download: DownloadConfig{
+			Enabled:      true,
+			Bin:          "yt-dlp",
+			Timeout:      10 * time.Minute,
+			Format:       "bv*+ba/b",
+			ExtraArgs:    nil,
+			AllowedHosts: nil,
+		},
+		Metrics: MetricsConfig{
+			Enabled:        true,
+			HealthInterval: 15 * time.Second,
 		},
 		Log: LogConfig{Level: "info"},
 	}
@@ -222,6 +235,18 @@ func TestValidate(t *testing.T) {
 		{"empty server host", func(c *Config) { c.Server.Host = "" }, true},
 		{"empty whisper host", func(c *Config) { c.Whisper.Host = "" }, true},
 		{"port boundaries ok", func(c *Config) { c.Server.Port = 1; c.Whisper.Port = 65535 }, false},
+		{"download empty bin", func(c *Config) { c.Download.Bin = "" }, true},
+		{"download zero timeout", func(c *Config) { c.Download.Timeout = 0 }, true},
+		{"download disabled skips bin/timeout checks", func(c *Config) {
+			c.Download.Enabled = false
+			c.Download.Bin = ""
+			c.Download.Timeout = 0
+		}, false},
+		{"download custom values ok", func(c *Config) {
+			c.Download.Bin = "/usr/local/bin/yt-dlp"
+			c.Download.Timeout = time.Minute
+			c.Download.AllowedHosts = []string{"youtube.com"}
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
